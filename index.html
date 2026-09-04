@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bilheteria BR — Cinema no Brasil</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+<script>
+  (function(){var t=localStorage.getItem('bilheteria-theme');if(t==='light')document.documentElement.setAttribute('data-theme','light');})();
+</script>
+</head>
+<body>
+<div class="app">
+
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">
+        <svg width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="2" width="14" height="12" rx="1.5" fill="#0a0e1a"/><rect x="3" y="4" width="2" height="2" fill="#efa838"/><rect x="3" y="7.5" width="2" height="2" fill="#efa838"/><rect x="3" y="11" width="2" height="1.4" fill="#efa838"/><rect x="11" y="4" width="2" height="2" fill="#efa838"/><rect x="11" y="7.5" width="2" height="2" fill="#efa838"/><rect x="11" y="11" width="2" height="1.4" fill="#efa838"/></svg>
+      </div>
+      <div>
+        <div class="brand-name">POC - SCB</div>
+        <div class="brand-sub">Painel SCB com IA</div>
+      </div>
+    </div>
+    <div class="title-wrap">
+      <div class="title">Bilheteria no Cinema Brasileiro</div>
+      <div class="subtitle" id="periodo-subtitle"></div>
+    </div>
+    <button class="theme-btn" id="theme-btn" title="Toggle light/dark mode">
+      <svg id="theme-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>
+      </svg>
+    </button>
+    <button class="menu-toggle-btn" id="menu-toggle-btn" title="Menu" aria-label="Abrir menu" aria-expanded="false">
+      <svg id="menu-toggle-icon" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 4.5h12M2 8h12M2 11.5h12"/></svg>
+    </button>
+    <nav class="topbar-menu" id="topbar-menu">
+      <div class="tabs" id="tabs">
+        <button class="tab active" data-tab="bilheteria">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><rect x="1.5" y="8" width="3" height="6.5" rx="1"/><rect x="6.5" y="4" width="3" height="10.5" rx="1"/><rect x="11.5" y="6" width="3" height="8.5" rx="1"/></svg>Bilheteria
+        </button>
+        <button class="tab" data-tab="filmes">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M5 3v10M11 3v10M2 6.3h3M2 9.6h3M11 6.3h3M11 9.6h3"/></svg>Filme
+        </button>
+        <button class="tab" data-tab="diretores">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="5.5" r="3"/><path d="M2 15c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/></svg>Diretor
+        </button>
+        <button class="tab" data-tab="produtores">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="6" width="12" height="8" rx="1"/><path d="M6 6V4.5a2 2 0 0 1 2-2v0a2 2 0 0 1 2 2V6"/></svg>Produtor
+        </button>
+        <button class="tab" data-tab="requerente">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="3" y="2" width="10" height="12" rx="1"/><path d="M6 5.3h1M9 5.3h1M6 8h1M9 8h1M6 10.7h1M9 10.7h1"/></svg>Requerente
+        </button>
+        <button class="tab" data-tab="salaexibicao">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M8 1.5C5.5 1.5 3.5 3.5 3.5 6.2c0 3.8 4.5 8.3 4.5 8.3s4.5-4.5 4.5-8.3C12.5 3.5 10.5 1.5 8 1.5z"/><circle cx="8" cy="6" r="1.6"/></svg>Exibidor
+        </button>
+        <button class="tab" data-tab="paises">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="6.3"/><path d="M1.7 8h12.6M8 1.7c1.8 1.7 2.8 4 2.8 6.3S9.8 12.6 8 14.3C6.2 12.6 5.2 10.3 5.2 8S6.2 3.4 8 1.7z"/></svg>País
+        </button>
+      </div>
+      <div class="ai-chat-group">
+        <button class="ai-chat-btn" id="ai-chat-btn" title="Pesquisar com IA">
+          <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1.2 9.3 5.6 13.7 7 9.3 8.4 8 12.8 6.7 8.4 2.3 7 6.7 5.6 8 1.2z"/><path d="M13.3 10.5 13.9 12.4 15.8 13 13.9 13.6 13.3 15.5 12.7 13.6 10.8 13 12.7 12.4 13.3 10.5z"/></svg>
+          Pesquisar com IA
+        </button>
+      </div>
+    </nav>
+  </header>
+
+  <div class="layout">
+    <!-- Sidebar (filters built by js/app.js) -->
+    <aside class="sidebar" id="sidebar-aside">
+      <div class="sidebar-scroll" id="sidebar"></div>
+      <div class="clear-wrap"><div class="clear-btn" id="clear-btn">Limpar filtros</div></div>
+    </aside>
+    <button class="sidebar-toggle" id="sidebar-toggle" title="Recolher/expandir filtros">
+      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3 5 8l5 5"/></svg>
+    </button>
+
+    <!-- Main -->
+    <main class="main">
+
+      <!-- Bilheteria tab -->
+      <section class="tab-pane active" id="pane-bilheteria">
+        <div class="stat-cards" id="bh-stat-cards">
+          <div class="stat-card">
+            <div class="stat-head"><span class="stat-ico"><svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><rect x="1.5" y="8" width="3" height="6.5" rx="1"/><rect x="6.5" y="4" width="3" height="10.5" rx="1"/><rect x="11.5" y="6" width="3" height="8.5" rx="1"/></svg></span><span>Público</span></div>
+            <div class="stat-value" id="bh-publico">–</div>
+            <div class="stat-sub">espectadores</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-head"><span class="stat-ico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" stroke-width="1.3"><rect x="2" y="3" width="12" height="11" rx="1.5"/><path d="M2 6.5h12M5.5 1.5v3M10.5 1.5v3"/></svg></span><span>Dias de Exibição</span></div>
+            <div class="stat-value" id="bh-dias">–</div>
+            <div class="stat-sub">dias com sessão</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-head"><span class="stat-ico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" stroke-width="1.3"><circle cx="8" cy="8" r="6.3"/><path d="M8 4.5V8l3 2"/></svg></span><span>Sessões de Exibição</span></div>
+            <div class="stat-value" id="bh-sessoes">–</div>
+            <div class="stat-sub">sessões realizadas</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-head"><span class="stat-ico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" stroke-width="1.3"><rect x="2" y="3" width="12" height="10" rx="1"/><path d="M5 3v10M11 3v10M2 6.3h3M2 9.6h3M11 6.3h3M11 9.6h3"/></svg></span><span>Títulos Distintos</span></div>
+            <div class="stat-value" id="bh-titulos">–</div>
+            <div class="stat-sub">obras (CPB/ROE)</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-head"><span class="stat-ico"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="var(--accent)" stroke-width="1.3"><path d="M8 1.5C5.5 1.5 3.5 3.5 3.5 6.2c0 3.8 4.5 8.3 4.5 8.3s4.5-4.5 4.5-8.3C12.5 3.5 10.5 1.5 8 1.5z"/><circle cx="8" cy="6" r="1.6"/></svg></span><span>Salas Distintas</span></div>
+            <div class="stat-value" id="bh-salas">–</div>
+            <div class="stat-sub">salas de exibição</div>
+          </div>
+        </div>
+        <div class="map-row" id="bh-charts-row">
+          <div class="map-section">
+            <div class="map-label">PÚBLICO POR ANO CINEMATOGRÁFICO &middot; CPB &times; ROE</div>
+            <div class="panel chart-panel">
+              <svg id="bh-chart-bar"></svg>
+              <div class="chart-legend" id="bh-legend-bar"></div>
+              <div class="tooltip" id="bh-tooltip-bar"></div>
+            </div>
+          </div>
+          <div class="map-section chart-section-narrow">
+            <div class="map-label">PARTICIPAÇÃO NO PÚBLICO</div>
+            <div class="panel chart-panel">
+              <svg id="bh-chart-pie-publico"></svg>
+              <div class="chart-legend" id="bh-legend-pie-publico"></div>
+              <div class="tooltip" id="bh-tooltip-pie-publico"></div>
+            </div>
+          </div>
+          <div class="map-section chart-section-narrow">
+            <div class="map-label">PARTICIPAÇÃO NAS SESSÕES</div>
+            <div class="panel chart-panel">
+              <svg id="bh-chart-pie-sessoes"></svg>
+              <div class="chart-legend" id="bh-legend-pie-sessoes"></div>
+              <div class="tooltip" id="bh-tooltip-pie-sessoes"></div>
+            </div>
+          </div>
+        </div>
+        <div class="map-section">
+          <div class="map-label">PÚBLICO POR SEMANA CINEMATOGRÁFICA &middot; UMA LINHA POR ANO</div>
+          <div class="panel chart-panel chart-panel-tall">
+            <svg id="bh-chart-linhas"></svg>
+            <div class="chart-legend chart-legend-wrap" id="bh-legend-linhas"></div>
+            <div class="tooltip" id="bh-tooltip-linhas"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="tab-pane" id="pane-filmes">
+        <div class="placeholder-pane">Em construção — tabela de filmes (CPB/ROE + bilheteria) será implementada aqui.</div>
+      </section>
+
+      <section class="tab-pane" id="pane-diretores"></section>
+
+      <section class="tab-pane" id="pane-produtores"></section>
+
+      <section class="tab-pane" id="pane-paises">
+        <div class="map-row" id="paises-map-row">
+          <div class="map-section">
+            <div class="map-label">PAÍS PRODUTOR &middot; PÚBLICO</div>
+            <div class="map-box">
+              <div class="map-holder" id="paises-map-holder-publico"></div>
+              <div class="tooltip" id="paises-tooltip-publico"></div>
+            </div>
+          </div>
+          <div class="map-section">
+            <div class="map-label">PAÍS PRODUTOR &middot; SESSÕES</div>
+            <div class="map-box">
+              <div class="map-holder" id="paises-map-holder-sessoes"></div>
+              <div class="tooltip" id="paises-tooltip-sessoes"></div>
+            </div>
+          </div>
+        </div>
+        <div class="map-row" id="paises-bars-row"></div>
+      </section>
+
+      <section class="tab-pane" id="pane-salaexibicao"></section>
+
+      <section class="tab-pane" id="pane-requerente"></section>
+
+      <section class="tab-pane" id="pane-chat"></section>
+
+    </main>
+
+    <!-- Detalhes do Filme (Filme/Diretor/Produtor) -->
+    <aside class="detail-aside" id="detail-aside">
+      <div class="detail-aside-scroll" id="detail-aside-scroll"></div>
+    </aside>
+    <button class="detail-toggle" id="detail-toggle" title="Recolher/expandir detalhes">
+      <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg>
+    </button>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<script src="js/country-data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

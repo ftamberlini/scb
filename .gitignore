@@ -1,0 +1,7 @@
+oracle
+__pycache__/
+*.pyc
+.venv/
+.env
+deploy/
+data/
