@@ -1,4 +1,4 @@
-"""Portão de segurança entre o SQL gerado pelo LLM e o DuckDB.
+"""Safety boundary between LLM-generated SQL and DuckDB.
 
 Usa sqlglot para: (1) validar a sintaxe, (2) garantir que é uma única
 consulta de leitura (SELECT/UNION/INTERSECT/EXCEPT — nunca DROP/UPDATE/
@@ -12,7 +12,7 @@ from sqlglot import exp
 DIALECT = "duckdb"
 
 # Únicas tabelas que o agente pode consultar — as views definidas em
-# py/ancine_db.py. Qualquer outro nome (ou função-tabela) é rejeitado.
+# app/database.py. Qualquer outro nome (ou função-tabela) é rejeitado.
 ALLOWED_TABLES = {"bilheteria", "obra", "obra_pais", "obra_diretor", "obra_produtor", "salaexibicao"}
 
 # Funções que dão acesso a arquivos/sistema/extensões do DuckDB e nunca são

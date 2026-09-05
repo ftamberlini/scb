@@ -1,0 +1,18 @@
+-- DDL gerada a partir de data/ancine/roe.parquet (31,311 linhas)
+CREATE TABLE roe (
+    "TITULO_ORIGINAL"       VARCHAR,
+    "TITULO_BRASIL"         VARCHAR,
+    "ROE"                   VARCHAR,
+    "DATA_EMISSAO_ROE"      DATE,
+    "SITUACAO_OBRA"         VARCHAR,
+    "TIPO_OBRA"             VARCHAR,
+    "SUBTIPO_OBRA"          VARCHAR,
+    "CLASSIFICACAO_OBRA"    VARCHAR,
+    "ORGANIZACAO_TEMPORAL"  VARCHAR,
+    "DURACAO_TOTAL_MINUTOS" DOUBLE,
+    "QUANTIDADE_EPISODIOS"  BIGINT,
+    "ANO_PRODUCAO_INICIAL"  BIGINT,
+    "ANO_PRODUCAO_FINAL"    BIGINT,
+    "REQUERENTE"            VARCHAR,
+    "CNPJ_REQUERENTE"       VARCHAR
+);

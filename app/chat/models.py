@@ -1,4 +1,4 @@
-"""Registro dos modelos de IA disponíveis para o chat — cada opção sabe
+"""Registry of language models available to the chat feature.
 construir seu próprio LangChain chat model. Adicionar um modelo novo é
 adicionar uma entrada em MODEL_OPTIONS; nl2sql_agent.py e o endpoint em
 server.py não precisam saber a diferença entre os provedores.
@@ -14,6 +14,18 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 _FALLBACK_MODEL_ID = "claude-haiku-4-5-20251001"
+
+MODEL_API_KEYS = {
+    "Anthropic": ("ANTHROPIC_API_KEY",),
+    "OpenAI": ("OPENAI_API_KEY",),
+    "Google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"),
+    "DeepSeek": ("DEEPSEEK_API_KEY",),
+    "Alibaba": ("QWEN_API_KEY",),
+}
+
+
+class ModelUnavailableError(RuntimeError):
+    pass
 
 
 # ── Anthropic ────────────────────────────────────────────────────────────────
@@ -109,20 +121,36 @@ if DEFAULT_MODEL_ID not in MODEL_OPTIONS:
 
 
 def resolve_model_id(model_id: str | None) -> str:
-    return model_id if model_id in MODEL_OPTIONS else DEFAULT_MODEL_ID
+    if model_id in MODEL_OPTIONS:
+        return model_id
+    if model_is_available(DEFAULT_MODEL_ID):
+        return DEFAULT_MODEL_ID
+    return next((key for key in MODEL_OPTIONS if model_is_available(key)), DEFAULT_MODEL_ID)
+
+
+def model_is_available(model_id: str) -> bool:
+    provider = MODEL_OPTIONS[model_id].get("provider", "")
+    return any(os.getenv(name) for name in MODEL_API_KEYS.get(provider, ()))
 
 
 def build_chat_model(model_id: str | None):
-    return MODEL_OPTIONS[resolve_model_id(model_id)]["build"]()
+    resolved = resolve_model_id(model_id)
+    if not model_is_available(resolved):
+        raise ModelUnavailableError("The selected model provider is not configured.")
+    return MODEL_OPTIONS[resolved]["build"]()
 
 
 def list_model_options() -> list[dict]:
+    show_unavailable = os.getenv("CHAT_SHOW_UNAVAILABLE_MODELS", "false").lower() == "true"
+    effective_default = resolve_model_id(None)
     return [
         {
             "id": model_id,
             "label": opt["label"],
             "provider": opt.get("provider", "Outro"),
-            "default": model_id == DEFAULT_MODEL_ID,
+            "default": model_id == effective_default,
+            "available": model_is_available(model_id),
         }
         for model_id, opt in MODEL_OPTIONS.items()
+        if show_unavailable or model_is_available(model_id)
     ]

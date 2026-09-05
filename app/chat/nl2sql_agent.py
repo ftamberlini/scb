@@ -1,17 +1,22 @@
-"""Agente LangChain que converte perguntas em linguagem natural em SQL sobre
-o schema Ancine, executa via sql_guard.py (sqlglot) e responde ao usuário —
+"""LangChain agent that converts natural-language questions into guarded SQL.
+o schema Ancine, executa via sql_validator.py (sqlglot) e responde ao usuário —
 a única ferramenta do agente é `run_sql_query`, que valida e roda a consulta
 no DuckDB. O modelo de IA (Claude/DeepSeek/Qwen) é escolhido por quem chama
-answer_question — ver py/chat/models.py para o registro de opções."""
+answer_question — ver app/chat/models.py para o registro de opções."""
+import os
+import threading
+
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 
-from py.ancine_db import _new_ancine_db
-from py.chat.models import build_chat_model, resolve_model_id
-from py.chat.schema import ANCINE_SCHEMA_PROMPT
-from py.chat.sql_guard import SQLValidationError, validate_and_prepare
+from app.chat.models import build_chat_model, resolve_model_id
+from app.chat.schema import ANCINE_SCHEMA_PROMPT
+from app.chat.sql_validator import SQLValidationError, validate_and_prepare
+from app.database import connect_ancine
 
 MAX_AGENT_STEPS = 20
+MAX_SQL_ATTEMPTS = 3
+SQL_TIMEOUT_SECONDS = float(os.getenv("CHAT_SQL_TIMEOUT_SECONDS", "30"))
 TOOL_PREVIEW_ROWS = 20
 
 SYSTEM_PROMPT = f"""\
@@ -55,6 +60,7 @@ class QueryRun:
         self.columns: list[str] = []
         self.rows: list[list] = []
         self.error: str | None = None
+        self.attempts: int = 0
 
 
 def _make_run_sql_tool(con, capture: QueryRun):
@@ -65,12 +71,18 @@ def _make_run_sql_tool(con, capture: QueryRun):
         resultado. Use SOMENTE SELECT — qualquer outra operação (DROP,
         UPDATE, DELETE, INSERT, ALTER, funções de acesso a arquivo/sistema)
         é rejeitada antes de chegar ao banco."""
+        capture.attempts += 1
+        if capture.attempts > MAX_SQL_ATTEMPTS:
+            return "ERRO: limite de 3 tentativas SQL atingido. Explique o problema ao usuário."
+
         try:
             safe_sql = validate_and_prepare(sql)
         except SQLValidationError as e:
             capture.error = str(e)
             return f"ERRO DE VALIDAÇÃO — corrija a consulta: {e}"
 
+        timeout = threading.Timer(SQL_TIMEOUT_SECONDS, con.interrupt)
+        timeout.start()
         try:
             cur = con.execute(safe_sql)
             cols = [d[0] for d in cur.description]
@@ -78,6 +90,8 @@ def _make_run_sql_tool(con, capture: QueryRun):
         except Exception as e:
             capture.error = str(e)
             return f"ERRO AO EXECUTAR NO DUCKDB — corrija a consulta: {e}"
+        finally:
+            timeout.cancel()
 
         capture.sql = safe_sql
         capture.columns = cols
@@ -94,7 +108,7 @@ def _make_run_sql_tool(con, capture: QueryRun):
 
 def answer_question(question: str, model_id: str | None = None) -> dict:
     """Roda o agente para uma pergunta e devolve resposta + SQL + tabela."""
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         capture = QueryRun()
         model = build_chat_model(model_id)

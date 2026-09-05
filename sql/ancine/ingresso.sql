@@ -1,0 +1,26 @@
+-- DDL gerada a partir de data/ancine/ingresso.parquet (35,981,592 linhas)
+CREATE TABLE ingresso (
+    "DH_INICIO_SESSAO"          VARCHAR,
+    "ANO_CINEMATOGRAFICO"       VARCHAR,
+    "SEMANA_CINEMATOGRAFICA"    INTEGER,
+    "TIPO_SESSAO"               VARCHAR,
+    "NR_OBRA"                   VARCHAR,
+    "NM_TITULO_OBRA"            VARCHAR,
+    "NM_TITULO_ORIGINAL"        VARCHAR,
+    "NM_TITULO_BRASIL"          VARCHAR,
+    "NM_PAIS_OBRA"              VARCHAR,
+    "NM_GENERO_OBRA"            VARCHAR,
+    "NR_REGISTRO_SALA_EXIBICAO" VARCHAR,
+    "QT_PUBLICO_TOTAL"          BIGINT,
+    "QT_PUBLICO_PAGANTE"        BIGINT,
+    "QT_PUBLICO_INTEIRA"        BIGINT,
+    "QT_PUBLICO_M_ENTRADA"      BIGINT,
+    "QT_PUBLICO_CORTESIA"       BIGINT,
+    "QT_PUBLICO_PROMOCIONAL"    BIGINT,
+    "VL_RENDA_TOTAL"            DOUBLE,
+    "PMI"                       DOUBLE,
+    "VL_RENDA_INTEIRA"          DOUBLE,
+    "VL_RENDA_M_ENTRADA"        DOUBLE,
+    "VL_RENDA_CORTESIA"         DOUBLE,
+    "VL_RENDA_PROMOCIONAL"      DOUBLE
+);

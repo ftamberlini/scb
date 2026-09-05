@@ -1,4 +1,4 @@
-"""Descrição do schema Ancine (views + macros DuckDB) usada no system prompt
+"""ANCINE schema description supplied to the language model.
 do agente de chat — é o "conhecimento do domínio" que o LangChain agent tem
 sobre o banco antes de gerar qualquer SQL."""
 

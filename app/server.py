@@ -1,28 +1,50 @@
-"""FastAPI backend — Bilheteria Cinema Brasil dashboard (DuckDB + Parquet, no Oracle at runtime).
+"""FastAPI backend for the Brazilian cinema box-office dashboard.
 
 Esqueleto inicial: ainda serve o schema/dados herdados do projeto de referência
 (rs_movie_dashboard, MovieLens/IMDb). Será adaptado por partes para bilheteria
 de cinema no Brasil (schema, queries e endpoints)."""
 import json
+import logging
 import os
 import re
 import threading
-from pathlib import Path
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import duckdb
 from dotenv import load_dotenv
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
 
 load_dotenv()  # ANTHROPIC_API_KEY / CHAT_LLM_MODEL (chat com IA), lidos de .env em dev
 
-from py.ancine_db import ANCINE_DIR, _ano_cine_py, _new_ancine_db, _semana_cine_py, _tipo_registro_py
-from py.chat.models import list_model_options
-from py.chat.service import answer_chat_question
+from app.database import (
+    ANCINE_DATA_DIR,
+    cinema_week,
+    cinema_year,
+    classify_registration,
+    connect_ancine,
+    execute_with_timeout,
+)
+from app.routers.chat import router as chat_router
+from app.runtime import BoundedTTLCache, RuntimeState
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO"),
+    format="%(message)s",
+)
+logger = logging.getLogger("cinema_dashboard")
+
+RUNTIME = RuntimeState()
+ANALYTICS_CACHE = BoundedTTLCache(
+    max_entries=int(os.getenv("ANALYTICS_CACHE_MAX_ENTRIES", "128")),
+    ttl_seconds=float(os.getenv("ANALYTICS_CACHE_TTL_SECONDS", "300")),
+)
+QUERY_SLOTS = threading.BoundedSemaphore(int(os.getenv("MAX_CONCURRENT_REQUESTS", "8")))
 
 DATA_DIR = Path(os.getenv("DATA_DIR", "./data/imdb"))
 
@@ -44,9 +66,8 @@ def _new_db() -> duckdb.DuckDBPyConnection:
 
 
 # ── Ancine (bilheteria) ─────────────────────────────────────────────────────
-# ANCINE_DIR, as macros (ano_cine/semana_cine/tipo_registro) e a conexão
-# DuckDB (_new_ancine_db) vivem em py/ancine_db.py — compartilhadas com o
-# agente de chat com IA em py/chat/.
+# The ANCINE data directory, cinema-calendar helpers, and DuckDB connection
+# live in app/database.py and are shared with the chat agent.
 
 
 # ── Detalhes do Filme (data/imdb/, via join CPB/ROE → imdbID) ──────────────
@@ -69,7 +90,7 @@ def _new_filme_detalhe_db() -> duckdb.DuckDBPyConnection:
         if p.exists():
             con.execute(f"CREATE VIEW {t} AS SELECT * FROM read_parquet('{p}')")
     for t in ("cpb", "roe", "ancine_cpb", "ancine_roe"):
-        p = ANCINE_DIR / f"{t}.parquet"
+        p = ANCINE_DATA_DIR / f"{t}.parquet"
         if p.exists():
             con.execute(f"CREATE VIEW {t} AS SELECT * FROM read_parquet('{p}')")
     return con
@@ -356,8 +377,8 @@ _PERIODO_OPTIONS: dict = {"anos": [], "semanas": [], "dataMin": None, "dataMax":
 
 def _load_periodo_options() -> dict:
     """Anos e semanas cinematográficas distintos, e período (data mín/máx) coberto
-    por data/ancine/bilheteria_*.parquet."""
-    con = _new_ancine_db()
+    pelo dataset Hive data/ancine/ingresso_hive."""
+    con = connect_ancine()
     try:
         anos = con.execute(
             "SELECT DISTINCT ano_cine(DATA_EXIBICAO) AS ano FROM bilheteria ORDER BY ano"
@@ -375,7 +396,7 @@ def _load_periodo_options() -> dict:
             "dataMax": data_max.strftime("%d/%m/%Y") if data_max else None,
         }
     except duckdb.CatalogException:
-        # data/ancine/bilheteria_*.parquet ainda não existe neste ambiente
+        # data/ancine/ingresso_hive ainda não existe neste ambiente
         return {"anos": [], "semanas": [], "dataMin": None, "dataMax": None}
     finally:
         con.close()
@@ -386,7 +407,7 @@ _OBRA_OPTIONS: dict = {"paisOrigem": []}
 
 def _load_obra_options() -> dict:
     """País de origem distintos (CPB + ROE) em data/ancine/, para o filtro Obra."""
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         rows = con.execute(
             "SELECT DISTINCT PAIS_ORIGEM FROM obra_pais WHERE PAIS_ORIGEM IS NOT NULL ORDER BY 1"
@@ -406,7 +427,7 @@ def _load_sala_options() -> dict:
     """Combinações distintas (grupo exibidor, UF, município) em data/ancine/
     salaexibicao.parquet, para o filtro Exibidor — o frontend deriva as opções
     de cada campo a partir daqui, em cascata (grupo -> UF -> município)."""
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         rows = con.execute(
             "SELECT DISTINCT NOME_GRUPO_EXIBIDOR, UF_COMPLEXO, MUNICIPIO_COMPLEXO FROM salaexibicao"
@@ -542,21 +563,23 @@ def _load_films() -> list[dict]:
 
 def _load_all_data() -> None:
     global _FILMS, _RATINGS_DIST, _PERIODO_OPTIONS, _OBRA_OPTIONS, _SALA_OPTIONS, _FILMES_SEM_FILTRO_CACHE, _READY
-    print("[BilheteriaBR] Loading films from Parquet…")
-    _FILMS = _load_films()
-    _RATINGS_DIST = _load_ratings_dist()
-    print("[BilheteriaBR] Loading Ancine período options…")
-    _PERIODO_OPTIONS = _load_periodo_options()
-    print("[BilheteriaBR] Loading Ancine obra options…")
-    _OBRA_OPTIONS = _load_obra_options()
-    print("[BilheteriaBR] Loading Ancine sala options…")
-    _SALA_OPTIONS = _load_sala_options()
-    print("[BilheteriaBR] Loading Ancine filmes (sem filtro, pode levar ~30s)…")
-    _FILMES_SEM_FILTRO_CACHE = _load_filmes_sem_filtro()
-    print("[BilheteriaBR] Loading Ancine caches sem filtro (bilheteria/diretores/produtores/requerentes/países/salas)…")
-    _load_ancine_sem_filtro_caches()
+    RUNTIME.mark_loading()
+    logger.info(json.dumps({"event": "startup_loading"}))
+    try:
+        _FILMS = _load_films()
+        _RATINGS_DIST = _load_ratings_dist()
+        _PERIODO_OPTIONS = _load_periodo_options()
+        _OBRA_OPTIONS = _load_obra_options()
+        _SALA_OPTIONS = _load_sala_options()
+        _FILMES_SEM_FILTRO_CACHE = _load_filmes_sem_filtro()
+        _load_ancine_sem_filtro_caches()
+    except Exception as error:
+        RUNTIME.mark_failed(error)
+        logger.exception(json.dumps({"event": "startup_failed", "errorType": type(error).__name__}))
+        return
     _READY = True
-    print("[BilheteriaBR] All data loaded — ready to serve.")
+    RUNTIME.mark_ready()
+    logger.info(json.dumps({"event": "startup_ready"}))
 
 
 @asynccontextmanager
@@ -568,21 +591,70 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(chat_router)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_origins=[origin.strip() for origin in os.getenv("CORS_ORIGINS", "").split(",") if origin.strip()],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
 
+@app.middleware("http")
+async def observe_and_limit_requests(request: Request, call_next):
+    started = time.monotonic()
+    limited = request.url.path.startswith("/api/")
+    acquired = not limited or QUERY_SLOTS.acquire(blocking=False)
+    if not acquired:
+        RUNTIME.record_rejection()
+        return JSONResponse(status_code=503, content={"error": "Servidor ocupado. Tente novamente."})
+    try:
+        response = await call_next(request)
+    except Exception:
+        RUNTIME.record_request(request.url.path, time.monotonic() - started, 500)
+        logger.exception(json.dumps({"event": "request_failed", "path": request.url.path}))
+        raise
+    finally:
+        if limited and acquired:
+            QUERY_SLOTS.release()
+    elapsed = time.monotonic() - started
+    RUNTIME.record_request(request.url.path, elapsed, response.status_code)
+    logger.info(json.dumps({
+        "event": "request",
+        "method": request.method,
+        "path": request.url.path,
+        "status": response.status_code,
+        "elapsedMs": round(elapsed * 1000, 3),
+    }))
+    return response
+
+
 @app.get("/health")
 def health():
-    from fastapi.responses import JSONResponse
-    if not _READY:
-        return JSONResponse(status_code=503, content={"status": "loading"})
+    if RUNTIME.status != "ready":
+        return JSONResponse(
+            status_code=503,
+            content={"status": RUNTIME.status, "error": RUNTIME.startup_error},
+        )
     return {"status": "ok"}
+
+
+@app.get("/health/live")
+def liveness():
+    return {"status": "alive"}
+
+
+@app.get("/health/ready")
+def readiness():
+    return health()
+
+
+@app.get("/metrics")
+def metrics():
+    snapshot = RUNTIME.snapshot()
+    snapshot["analyticsCacheEntries"] = len(ANALYTICS_CACHE)
+    return snapshot
 
 
 @app.get("/api/films")
@@ -620,7 +692,7 @@ def api_ancine_titulo_brasil_sugestoes(q: str = ""):
     q = q.strip()
     if len(q) < 2:
         return []
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         rows = con.execute(
             """
@@ -695,20 +767,22 @@ _FILMES_QUERY_SQL = """
 """
 
 
-def _query_filmes(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> list[dict]:
+def _query_filmes_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> list[dict]:
     """Executa a query de bilheteria agregada por obra e faz o pós-
     processamento em Python (tipo CPB/ROE, ano-cine, público médio) — ver
     nota no SQL acima sobre por que essas colunas não são calculadas lá."""
-    rows = con.execute(_FILMES_QUERY_SQL.format(where_sql=where_sql), params).fetchall()
+    rows = execute_with_timeout(
+        con, _FILMES_QUERY_SQL.format(where_sql=where_sql), params
+    ).fetchall()
     out = []
     for codigo, titulo_original, titulo_brasil_raw, primeira_data, publico, sessoes, dias_exibicao, max_salas, max_complexos, pais_produtor in rows:
         out.append({
             "codigo": codigo,
-            "tipoRegistro": _tipo_registro_py(codigo),
+            "tipoRegistro": classify_registration(codigo),
             "tituloBrasil": titulo_brasil_raw or titulo_original,
             "tituloOriginal": titulo_original,
             "paisProdutor": pais_produtor,
-            "ano1aExibicao": _ano_cine_py(primeira_data),
+            "ano1aExibicao": cinema_year(primeira_data),
             "publico": publico,
             "sessoesRealizadas": sessoes,
             "diasExibicao": dias_exibicao,
@@ -717,6 +791,13 @@ def _query_filmes(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) 
             "maxComplexosOcupados": max_complexos,
         })
     return out
+
+
+def _query_filmes(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> list[dict]:
+    key = ("films", where_sql, tuple(params))
+    return ANALYTICS_CACHE.get_or_set(
+        key, lambda: _query_filmes_uncached(con, where_sql, params)
+    )
 
 
 _FILMES_FILTER_DEFAULTS = dict(
@@ -734,7 +815,7 @@ def _load_filmes_sem_filtro() -> list:
     já que essa consulta varre a bilheteria inteira (~37M linhas) e pode
     levar de 15 a 50s — rápido demais pra rodar a cada request, rápido o
     bastante pra rodar uma vez no boot."""
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         where_sql, params = _ancine_filmes_where(_FILMES_FILTER_DEFAULTS)
         return _query_filmes(con, where_sql, params)
@@ -778,7 +859,7 @@ def api_ancine_filmes(
         return _FILMES_SEM_FILTRO_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_filmes(con, where_sql, params)
     except duckdb.CatalogException:
@@ -819,7 +900,7 @@ def api_ancine_periodo_exibido(
         municipioRequerente=municipioRequerente, ufRequerente=ufRequerente,
     )
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         data_min, data_max = con.execute(
             f"SELECT MIN(b.DATA_EXIBICAO), MAX(b.DATA_EXIBICAO) FROM bilheteria b WHERE {where_sql}", params
@@ -834,9 +915,9 @@ def api_ancine_periodo_exibido(
         con.close()
 
 
-def _query_bilheteria_resumo(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> dict:
+def _query_bilheteria_resumo_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> dict:
     try:
-        row = con.execute(f"""
+        row = execute_with_timeout(con, f"""
             SELECT
                 SUM(b.PUBLICO)                    AS publico,
                 COUNT(DISTINCT b.DATA_EXIBICAO)    AS dias_exibicao,
@@ -855,8 +936,15 @@ def _query_bilheteria_resumo(con: duckdb.DuckDBPyConnection, where_sql: str, par
             "salasDistintas": salas_distintas or 0,
         }
     except duckdb.CatalogException:
-        # data/ancine/bilheteria_*.parquet ainda não existe neste ambiente
+        # data/ancine/ingresso_hive ainda não existe neste ambiente
         return {"publico": 0, "diasExibicao": 0, "sessoes": 0, "titulosDistintos": 0, "salasDistintas": 0}
+
+
+def _query_bilheteria_resumo(con, where_sql: str, params: list) -> dict:
+    key = ("summary", where_sql, tuple(params))
+    return ANALYTICS_CACHE.get_or_set(
+        key, lambda: _query_bilheteria_resumo_uncached(con, where_sql, params)
+    )
 
 
 _BILHETERIA_RESUMO_CACHE: dict = {"publico": 0, "diasExibicao": 0, "sessoes": 0, "titulosDistintos": 0, "salasDistintas": 0}
@@ -898,21 +986,21 @@ def api_ancine_bilheteria_resumo(
         return _BILHETERIA_RESUMO_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_bilheteria_resumo(con, where_sql, params)
     finally:
         con.close()
 
 
-def _query_bilheteria_grafico(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> dict:
+def _query_bilheteria_grafico_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> dict:
     try:
         # Agrupa por data (não por ano_cine) — aplicar a macro ano_cine por
         # linha num GROUP BY sobre a `bilheteria` inteira gera um plano muito
         # lento no DuckDB; agregando por data primeiro (poucos milhares de
         # linhas no resultado) e mapeando para ano_cine em Python depois é
         # muito mais rápido (ver _ano_cine_py).
-        rows = con.execute(f"""
+        rows = execute_with_timeout(con, f"""
             SELECT b.DATA_EXIBICAO AS data, tipo_registro(b.CPB_ROE) AS tipo,
                    SUM(b.PUBLICO) AS publico, COUNT(*) AS sessoes
             FROM bilheteria b
@@ -920,12 +1008,12 @@ def _query_bilheteria_grafico(con: duckdb.DuckDBPyConnection, where_sql: str, pa
             GROUP BY 1, 2
         """, params).fetchall()
     except duckdb.CatalogException:
-        # data/ancine/bilheteria_*.parquet ainda não existe neste ambiente
+        # data/ancine/ingresso_hive ainda não existe neste ambiente
         return {"porAno": []}
 
     por_ano: dict[int, dict] = {}
     for data, tipo, publico, sessoes in rows:
-        ano = _ano_cine_py(data)
+        ano = cinema_year(data)
         d = por_ano.setdefault(ano, {"ano": ano, "publicoCpb": 0, "publicoRoe": 0, "sessoesCpb": 0, "sessoesRoe": 0})
         if tipo == "CPB":
             d["publicoCpb"] += publico or 0
@@ -935,6 +1023,13 @@ def _query_bilheteria_grafico(con: duckdb.DuckDBPyConnection, where_sql: str, pa
             d["sessoesRoe"] += sessoes or 0
 
     return {"porAno": sorted(por_ano.values(), key=lambda d: d["ano"])}
+
+
+def _query_bilheteria_grafico(con, where_sql: str, params: list) -> dict:
+    key = ("chart", where_sql, tuple(params))
+    return ANALYTICS_CACHE.get_or_set(
+        key, lambda: _query_bilheteria_grafico_uncached(con, where_sql, params)
+    )
 
 
 _BILHETERIA_GRAFICO_CACHE: dict = {"porAno": []}
@@ -975,36 +1070,43 @@ def api_ancine_bilheteria_grafico(
         return _BILHETERIA_GRAFICO_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_bilheteria_grafico(con, where_sql, params)
     finally:
         con.close()
 
 
-def _query_bilheteria_semanal(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> dict:
+def _query_bilheteria_semanal_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> dict:
     try:
         # Agrupa por data (não por ano_cine/semana_cine) pelo mesmo motivo do
         # endpoint bilheteria-grafico acima — ver _ano_cine_py/_semana_cine_py.
-        rows = con.execute(f"""
+        rows = execute_with_timeout(con, f"""
             SELECT b.DATA_EXIBICAO AS data, SUM(b.PUBLICO) AS publico
             FROM bilheteria b
             WHERE {where_sql}
             GROUP BY 1
         """, params).fetchall()
     except duckdb.CatalogException:
-        # data/ancine/bilheteria_*.parquet ainda não existe neste ambiente
+        # data/ancine/ingresso_hive ainda não existe neste ambiente
         return {"porSemana": []}
 
     agregado: dict[tuple[int, int], int] = {}
     for data, publico in rows:
-        chave = (_ano_cine_py(data), _semana_cine_py(data))
+        chave = (cinema_year(data), cinema_week(data))
         agregado[chave] = agregado.get(chave, 0) + (publico or 0)
 
     return {"porSemana": [
         {"ano": ano, "semana": semana, "publico": publico}
         for (ano, semana), publico in sorted(agregado.items())
     ]}
+
+
+def _query_bilheteria_semanal(con, where_sql: str, params: list) -> dict:
+    key = ("weekly", where_sql, tuple(params))
+    return ANALYTICS_CACHE.get_or_set(
+        key, lambda: _query_bilheteria_semanal_uncached(con, where_sql, params)
+    )
 
 
 _BILHETERIA_SEMANAL_CACHE: dict = {"porSemana": []}
@@ -1045,7 +1147,7 @@ def api_ancine_bilheteria_semanal(
         return _BILHETERIA_SEMANAL_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_bilheteria_semanal(con, where_sql, params)
     finally:
@@ -1099,13 +1201,13 @@ _PESSOA_QUERY_SQL = """
 """
 
 
-def _query_pessoa_agregada(con: duckdb.DuckDBPyConnection, where_sql: str, params: list, pessoa_titulo_sql: str) -> list[dict]:
+def _query_pessoa_agregada_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list, pessoa_titulo_sql: str) -> list[dict]:
     """Agrega bilheteria por pessoa/empresa (diretor, produtor ou requerente) —
     `pessoa_titulo_sql` é uma query que retorna (pessoa, CODIGO), uma linha por
     obra em que essa pessoa aparece (uma obra pode ter várias pessoas, então
     uma sessão pode contar para mais de uma linha do resultado — esperado)."""
     sql = _PESSOA_QUERY_SQL.format(where_sql=where_sql, pessoa_titulo_sql=pessoa_titulo_sql)
-    rows = con.execute(sql, params).fetchall()
+    rows = execute_with_timeout(con, sql, params).fetchall()
     out = []
     for pessoa, qtd, publico, sessoes, dias in rows:
         publico = publico or 0
@@ -1120,6 +1222,14 @@ def _query_pessoa_agregada(con: duckdb.DuckDBPyConnection, where_sql: str, param
             "sessoesMediaTitulo": round(sessoes / qtd, 1) if qtd else None,
         })
     return out
+
+
+def _query_pessoa_agregada(con, where_sql: str, params: list, person_sql: str) -> list[dict]:
+    key = ("people", person_sql, where_sql, tuple(params))
+    return ANALYTICS_CACHE.get_or_set(
+        key,
+        lambda: _query_pessoa_agregada_uncached(con, where_sql, params, person_sql),
+    )
 
 
 _DIRETORES_CACHE: list = []
@@ -1163,7 +1273,7 @@ def api_ancine_diretores(
         return _DIRETORES_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_pessoa_agregada(con, where_sql, params,
             "SELECT DISTINCT DIRETOR AS pessoa, CODIGO FROM obra_diretor WHERE DIRETOR IS NOT NULL AND DIRETOR != ''")
@@ -1208,7 +1318,7 @@ def api_ancine_produtores(
         return _PRODUTORES_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_pessoa_agregada(con, where_sql, params,
             "SELECT DISTINCT PRODUTOR AS pessoa, CODIGO FROM obra_produtor WHERE PRODUTOR IS NOT NULL AND PRODUTOR != ''")
@@ -1254,7 +1364,7 @@ def api_ancine_requerentes(
         return _REQUERENTES_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_pessoa_agregada(con, where_sql, params,
             "SELECT DISTINCT REQUERENTE AS pessoa, CODIGO FROM obra WHERE REQUERENTE IS NOT NULL AND REQUERENTE != ''")
@@ -1299,7 +1409,7 @@ def api_ancine_paises(
         return _PAISES_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_pessoa_agregada(con, where_sql, params,
             "SELECT DISTINCT PAIS_ORIGEM AS pessoa, CODIGO FROM obra_pais WHERE PAIS_ORIGEM IS NOT NULL AND PAIS_ORIGEM != ''")
@@ -1318,7 +1428,7 @@ def api_ancine_filme_detalhe(codigo: str):
     data/ancine/ancine_cpb.parquet ou ancine_roe.parquet, coluna imdbID),
     também retorna Movie/Crew Detail em `imdb` (sem selos de avaliação); caso
     contrário `imdb` é null."""
-    tipo = _tipo_registro_py(codigo)
+    tipo = classify_registration(codigo)
     con = _new_filme_detalhe_db()
     try:
         ancine = None
@@ -1523,10 +1633,10 @@ _SALAS_QUERY_SQL = """
 """
 
 
-def _query_salas(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> list[dict]:
+def _query_salas_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> list[dict]:
     try:
         sql = _SALAS_QUERY_SQL.format(where_sql=where_sql)
-        rows = con.execute(sql, params).fetchall()
+        rows = execute_with_timeout(con, sql, params).fetchall()
     except duckdb.CatalogException:
         return []
 
@@ -1548,6 +1658,13 @@ def _query_salas(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -
     return out
 
 
+def _query_salas(con, where_sql: str, params: list) -> list[dict]:
+    key = ("theaters", where_sql, tuple(params))
+    return ANALYTICS_CACHE.get_or_set(
+        key, lambda: _query_salas_uncached(con, where_sql, params)
+    )
+
+
 _SALAS_CACHE: list = []
 
 
@@ -1560,7 +1677,7 @@ def _load_ancine_sem_filtro_caches() -> None:
     a cada carga da página."""
     global _BILHETERIA_RESUMO_CACHE, _BILHETERIA_GRAFICO_CACHE, _BILHETERIA_SEMANAL_CACHE
     global _DIRETORES_CACHE, _PRODUTORES_CACHE, _REQUERENTES_CACHE, _PAISES_CACHE, _SALAS_CACHE
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         where_sql, params = _ancine_filmes_where(_FILMES_FILTER_DEFAULTS)
         _BILHETERIA_RESUMO_CACHE = _query_bilheteria_resumo(con, where_sql, params)
@@ -1619,7 +1736,7 @@ def api_ancine_salas(
         return _SALAS_CACHE
 
     where_sql, params = _ancine_filmes_where(filters)
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         return _query_salas(con, where_sql, params)
     finally:
@@ -1631,7 +1748,7 @@ def api_ancine_sala_detalhe(registro_sala: int):
     """Detalhes cadastrais da sala (data/ancine/salaexibicao.parquet) para o
     painel lateral da aba Exibidor — grupo exibidor, exibidor, complexo, sala
     e assentos/acessibilidade."""
-    con = _new_ancine_db()
+    con = connect_ancine()
     try:
         row = con.execute(
             "SELECT * FROM salaexibicao WHERE REGISTRO_SALA = ? LIMIT 1", [registro_sala]
@@ -1702,25 +1819,6 @@ def api_ancine_sala_detalhe(registro_sala: int):
 
 
 # ── Chat com IA (NL → SQL) ──────────────────────────────────────────────────
-
-class ChatQuestion(BaseModel):
-    question: str
-    model: str | None = None
-
-
-@app.get("/api/chat/models")
-def api_chat_models():
-    """Modelos de IA disponíveis para o seletor no front-end (Claude/DeepSeek/Qwen)."""
-    return list_model_options()
-
-
-@app.post("/api/chat/query")
-def api_chat_query(body: ChatQuestion):
-    """Pergunta em linguagem natural -> agente LangChain (modelo escolhido em
-    body.model, ou o padrão) gera e valida (sqlglot) o SQL, executa contra as
-    views da Ancine e devolve resposta + SQL usado + tabela de resultado."""
-    return answer_chat_question(body.question, body.model)
-
 
 # Static files served last so API routes take priority
 app.mount("/", StaticFiles(directory=".", html=True), name="static")

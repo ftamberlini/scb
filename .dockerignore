@@ -1,0 +1,14 @@
+.git
+.agents
+.codex
+.github
+.pytest_cache
+.ruff_cache
+.venv
+**/__pycache__
+**/*.pyc
+.env
+tests
+sql
+data/ancine/old
+data/csv

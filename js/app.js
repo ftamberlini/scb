@@ -230,6 +230,20 @@
   function fmtInt(n) { return (n === null || n === undefined) ? '–' : n.toLocaleString('pt-BR'); }
   function colorOf(g) { return GENRE_COLORS[g] || '#9aa6b8'; }
   function $(id) { return document.getElementById(id); }
+  function announce(message) {
+    var status = $('app-status');
+    if (status) status.textContent = message;
+  }
+  var errorBannerTimer = null;
+  function showApiError() {
+    var banner = $('error-banner');
+    if (!banner) return;
+    banner.textContent = 'Não foi possível atualizar os dados. Tente novamente.';
+    banner.hidden = false;
+    announce(banner.textContent);
+    if (errorBannerTimer) clearTimeout(errorBannerTimer);
+    errorBannerTimer = setTimeout(function () { banner.hidden = true; }, 6000);
+  }
   function toTitleCase(s) {
     return (s || '').toLowerCase().replace(/(?:^|[\s\-\/])(\S)/g, function(m, c) { return m.slice(0, -1) + c.toUpperCase(); });
   }
@@ -301,8 +315,7 @@
   }
 
   function loadPeriodoOptions() {
-    fetch('/api/ancine/periodo-options')
-      .then(function (r) { return r.json(); })
+    window.dashboardApi.getJson('/api/ancine/periodo-options')
       .then(function (data) {
         PERIODO_OPTIONS = data || { anos: [], semanas: [] };
         render();
@@ -311,8 +324,7 @@
   }
 
   function loadObraOptions() {
-    fetch('/api/ancine/obra-options')
-      .then(function (r) { return r.json(); })
+    window.dashboardApi.getJson('/api/ancine/obra-options')
       .then(function (data) {
         OBRA_OPTIONS = data || { paisOrigem: [] };
         render();
@@ -321,8 +333,7 @@
   }
 
   function loadSalaOptions() {
-    fetch('/api/ancine/sala-options')
-      .then(function (r) { return r.json(); })
+    window.dashboardApi.getJson('/api/ancine/sala-options')
       .then(function (data) {
         SALA_OPTIONS = data || { combos: [] };
         render();
@@ -369,7 +380,7 @@
   function loadBilheteriaResumo() {
     var seq = ++_bilheteriaReqSeq;
     var qs = buildFilmesQueryString(); // mesmos filtros da sidebar
-    fetch('/api/ancine/bilheteria-resumo' + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('box-office-summary', '/api/ancine/bilheteria-resumo' + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _bilheteriaReqSeq) return; // resposta de uma requisição antiga (superada)
@@ -385,7 +396,7 @@
   function loadBilheteriaGrafico() {
     var seq = ++_bilheteriaGraficoReqSeq;
     var qs = buildFilmesQueryString();
-    fetch('/api/ancine/bilheteria-grafico' + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('box-office-chart', '/api/ancine/bilheteria-grafico' + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _bilheteriaGraficoReqSeq) return;
@@ -401,7 +412,7 @@
   function loadBilheteriaSemanal() {
     var seq = ++_bilheteriaSemanalReqSeq;
     var qs = buildFilmesQueryString();
-    fetch('/api/ancine/bilheteria-semanal' + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('box-office-weekly', '/api/ancine/bilheteria-semanal' + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _bilheteriaSemanalReqSeq) return;
@@ -754,7 +765,7 @@
     if (_world) { cb(); return; }
     if (_worldLoading) { setTimeout(function () { ensureWorldAtlas(cb); }, 120); return; }
     _worldLoading = true;
-    fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json')
+    window.dashboardApi.getJson('/static/vendor/countries-110m.json')
       .then(function (r) { return r.json(); })
       .then(function (topo) {
         _world = window.topojson.feature(topo, topo.objects.countries).features;
@@ -915,7 +926,7 @@
     st.loading = true;
     renderPessoaPane(cfg);
     var qs = buildFilmesQueryString(); // mesmos filtros da sidebar
-    fetch(cfg.endpoint + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('people-' + cfg.tab, cfg.endpoint + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _pessoaReqSeq[cfg.tab]) return; // resposta de uma requisição antiga (superada)
@@ -1068,6 +1079,33 @@
     return parts.join('&');
   }
 
+  var URL_ARRAY_FILTERS = ['anos', 'paisOrigem', 'grupoExibidor', 'municipioSala', 'ufSala', 'municipioRequerente', 'ufRequerente'];
+  var URL_TEXT_FILTERS = ['semanaInicio', 'semanaFim', 'cpbRoe', 'tituloBrasileiro', 'tituloOriginal', 'registroSala', 'nomeDiretor', 'nomeProdutor', 'cnpjRequerente', 'nomeRequerente'];
+  var VALID_TABS = ['bilheteria', 'filmes', 'diretores', 'produtores', 'requerente', 'salaexibicao', 'paises', 'chat'];
+
+  function restoreStateFromUrl() {
+    var params = new URLSearchParams(window.location.search);
+    URL_ARRAY_FILTERS.forEach(function (key) {
+      var values = params.getAll(key);
+      state[key] = key === 'anos' ? values.map(Number).filter(Number.isFinite) : values;
+    });
+    URL_TEXT_FILTERS.forEach(function (key) {
+      if (params.has(key)) state[key] = params.get(key) || '';
+    });
+    var tab = params.get('tab');
+    if (VALID_TABS.indexOf(tab) >= 0) state.tab = tab;
+  }
+
+  function syncStateToUrl() {
+    var query = buildFilmesQueryString();
+    var params = new URLSearchParams(query);
+    if (state.tab !== 'bilheteria') params.set('tab', state.tab);
+    var next = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+    if (next !== window.location.pathname + window.location.search) {
+      window.history.replaceState(null, '', next);
+    }
+  }
+
   var _filmesDebounce = null;
   var _filmesReqSeq = 0;
 
@@ -1081,7 +1119,7 @@
     state.filmesLoading = true;
     renderFilmesPane();
     var qs = buildFilmesQueryString();
-    fetch('/api/ancine/filmes' + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('films', '/api/ancine/filmes' + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _filmesReqSeq) return; // resposta de uma requisição antiga (superada)
@@ -1220,7 +1258,7 @@
     state.salasLoading = true;
     renderSalasPane();
     var qs = buildFilmesQueryString();
-    fetch('/api/ancine/salas' + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('theaters', '/api/ancine/salas' + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _salasReqSeq) return; // resposta de uma requisição antiga (superada)
@@ -1368,7 +1406,7 @@
 
     var seq = ++_detailRelatedReqSeq;
     var qs = buildRelatedFilmsQueryString(tab, nome);
-    fetch('/api/ancine/filmes' + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('related-films', '/api/ancine/filmes' + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _detailRelatedReqSeq) return; // resposta de uma requisição antiga (superada)
@@ -1398,7 +1436,7 @@
     PESSOA_TABS.forEach(function (cfg) { if (state.pessoaTabs[cfg.tab].rows.length) renderPessoaPane(cfg); });
 
     var seq = ++_detailReqSeq;
-    fetch('/api/ancine/filme-detalhe/' + encodeURIComponent(codigo))
+    window.dashboardApi.getLatest('film-detail', '/api/ancine/filme-detalhe/' + encodeURIComponent(codigo))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _detailReqSeq) return; // resposta de uma requisição antiga (superada)
@@ -1431,7 +1469,7 @@
     PESSOA_TABS.forEach(function (cfg) { if (state.pessoaTabs[cfg.tab].rows.length) renderPessoaPane(cfg); });
 
     var seq = ++_detailSalaReqSeq;
-    fetch('/api/ancine/sala-detalhe/' + encodeURIComponent(registroSala))
+    window.dashboardApi.getLatest('theater-detail', '/api/ancine/sala-detalhe/' + encodeURIComponent(registroSala))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _detailSalaReqSeq) return; // resposta de uma requisição antiga (superada)
@@ -1568,8 +1606,7 @@
   function loadChatModels() {
     if (state.chat.modelOptions.length || state.chat.modelsLoading) return;
     state.chat.modelsLoading = true;
-    fetch('/api/chat/models')
-      .then(function (r) { return r.json(); })
+    window.dashboardApi.getJson('/api/chat/models')
       .then(function (data) {
         state.chat.modelOptions = data || [];
         state.chat.modelsLoading = false;
@@ -1594,14 +1631,13 @@
     state.chat.messages.push({ role: 'user', text: question });
     var idx = state.chat.messages.length;
     state.chat.messages.push({ role: 'assistant', loading: true });
+    announce('Consultando a inteligência artificial.');
     renderChatAside();
 
-    fetch('/api/chat/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: question, model: state.chat.modelId })
+    window.dashboardApi.postJson('/api/chat/query', {
+      question: question,
+      model: state.chat.modelId
     })
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         state.chat.messages[idx] = {
           role: 'assistant', question: question,
@@ -1610,9 +1646,11 @@
           page: 0
         };
         state.chat.selected = idx;
+        announce(data.error ? 'A consulta falhou.' : 'Resposta da inteligência artificial recebida.');
       })
       .catch(function (err) {
         state.chat.messages[idx] = { role: 'assistant', question: question, error: String(err) };
+        announce('Não foi possível concluir a consulta.');
         state.chat.selected = idx;
       })
       .then(function () {
@@ -2202,7 +2240,7 @@
   function loadPeriodoExibido() {
     var seq = ++_periodoExibidoReqSeq;
     var qs = buildFilmesQueryString();
-    fetch('/api/ancine/periodo-exibido' + (qs ? '?' + qs : ''))
+    window.dashboardApi.getLatest('display-period', '/api/ancine/periodo-exibido' + (qs ? '?' + qs : ''))
       .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _periodoExibidoReqSeq) return; // resposta de uma requisição antiga (superada)
@@ -2218,6 +2256,7 @@
 
   function render() {
     var fs = filterFilms();
+    syncStateToUrl();
 
     // período exibido (data mín/máx de exibição), de acordo com os filtros —
     // mostrado no header, em todas as abas
@@ -2775,7 +2814,7 @@
     if (!_ro4 && h4) { _ro4 = new ResizeObserver(function () { drawMap('map-holder-wri', 'tooltip-wri', 'count', 'writers',   '--map-teal',   '--map-teal-faint',   _wriBubbles, wriTipFn); }); _ro4.observe(h4); }
     if (!_world && !_worldLoading) {
       _worldLoading = true;
-      fetch('https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json')
+      window.dashboardApi.getJson('/static/vendor/countries-110m.json')
         .then(function (r) { return r.json(); })
         .then(function (topo) {
           _world = window.topojson.feature(topo, topo.objects.countries).features;
@@ -2890,7 +2929,13 @@
     if (topbarMenu) topbarMenu.classList.remove('open');
     var menuToggleBtn = $('menu-toggle-btn');
     if (menuToggleBtn) menuToggleBtn.setAttribute('aria-expanded', 'false');
-    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (b) {
+      var active = b.getAttribute('data-tab') === tab;
+      b.classList.toggle('active', active);
+      b.setAttribute('role', 'tab');
+      b.setAttribute('aria-selected', active ? 'true' : 'false');
+      b.setAttribute('tabindex', active ? '0' : '-1');
+    });
     $('pane-bilheteria').classList.toggle('active', tab === 'bilheteria');
     $('pane-filmes').classList.toggle('active', tab === 'filmes');
     $('pane-diretores').classList.toggle('active', tab === 'diretores');
@@ -2922,6 +2967,8 @@
   }
 
   function init() {
+    restoreStateFromUrl();
+    window.addEventListener('dashboard-api-error', showApiError);
     // Theme toggle
     var isDark = document.documentElement.getAttribute('data-theme') !== 'light';
     applyTheme(isDark);
@@ -2987,7 +3034,7 @@
       });
       render();
     });
-    render();
+    setTab(state.tab);
   }
 
   function loadAndInit() {
@@ -3001,10 +3048,11 @@
     dots.textContent = 'connecting to oracle';
     overlay.appendChild(msg);
     document.body.appendChild(overlay);
+    announce('Carregando base de dados.');
 
     Promise.all([
-      fetch('/api/films').then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
-      fetch('/api/ratings-dist').then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      window.dashboardApi.getJson('/api/films'),
+      window.dashboardApi.getJson('/api/ratings-dist')
     ])
       .then(function(results) {
         var data = results[0];
@@ -3031,6 +3079,7 @@
           countries: derivedCntrs.length ? derivedCntrs : rows.map(function(r) { return r[0]; }).sort(function(a, b) { return a.localeCompare(b); })
         };
         document.body.removeChild(overlay);
+        announce('Painel carregado.');
         init();
         loadPeriodoOptions();
         loadObraOptions();
@@ -3040,6 +3089,7 @@
         msg.textContent = 'ERRO: servidor não disponível';
         dots.textContent = 'inicie com: uv run uvicorn server:app --reload';
         msg.style.color = '#ef5b5b';
+        announce('Erro ao carregar o painel.');
         console.error('[BilheteriaBR] failed to load films:', err);
       });
   }
