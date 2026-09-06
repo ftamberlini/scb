@@ -14,7 +14,8 @@
   var YEARS = []; // populated from Oracle data after load
   var RATINGS_DIST = []; // [{rating, votes}] from /api/ratings-dist
   var PERIODO_OPTIONS = { anos: [], semanas: [] }; // from /api/ancine/periodo-options
-  var OBRA_OPTIONS = { paisOrigem: [] }; // from /api/ancine/obra-options
+  var OBRA_OPTIONS = { paisOrigem: [], tipoObra: [], subtipoObra: [] }; // from /api/ancine/obra-options
+  var NACIONALIDADE_OPTIONS = ['Brasileira', 'Estrangeira'];
   var SALA_OPTIONS = { combos: [] }; // from /api/ancine/sala-options — [{grupoExibidor, uf, municipio}]
   var GENDERS = ['Male','Female','Unknown'];
   var RACES = ['WHITE','ASIAN','BLACK','INDIGENOUS','MIXED-RACE','UNKNOWN'];
@@ -161,6 +162,7 @@
     anos: [], semanaInicio: '', semanaFim: '',
     // Obra
     cpbRoe: '', tituloBrasileiro: '', tituloOriginal: '', paisOrigem: [],
+    nacionalidade: [], tipoObra: [], subtipoObra: [],
     // Sala de Exibição
     registroSala: '', grupoExibidor: [], municipioSala: [], ufSala: [],
     // Diretor
@@ -174,8 +176,8 @@
     // ao trocar de aba ou re-renderizar, só refaz o fetch se os filtros
     // atuais forem diferentes do que já está carregado (ver render()/setTab()).
     bilheteriaResumo: null, bilheteriaGrafico: [], bilheteriaSemanal: [], bilheteriaLoadedQs: null,
-    // Aba Países (data/ancine/, via /api/ancine/paises)
-    paisesRows: [], paisesLoading: false, paisesLoadedQs: null,
+    // Aba Mapa (data/ancine/, via /api/ancine/paises)
+    mapaRows: [], mapaLoading: false, mapaLoadedQs: null, mapaUfRows: [],
     // Abas Diretores/Produtores/Requerente (data/ancine/, via PESSOA_TABS)
     pessoaTabs: {
       diretores:  { rows: [], loading: false, page: 0, sortKey: 'publicoTotal', sortDir: 'desc', loadedQs: null },
@@ -228,6 +230,8 @@
   function fmtMoney(m) { return m >= 1000 ? '$' + (m / 1000).toFixed(2) + 'B' : '$' + Math.round(m) + 'M'; }
   function fmtVotes(n) { if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'; if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'; return String(n); }
   function fmtInt(n) { return (n === null || n === undefined) ? '–' : n.toLocaleString('pt-BR'); }
+  function fmtBRL(n) { return (n === null || n === undefined) ? '–' : n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+  function fmtMillion(n) { return (n === null || n === undefined) ? '–' : (n / 1e6).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' M'; }
   function colorOf(g) { return GENRE_COLORS[g] || '#9aa6b8'; }
   function $(id) { return document.getElementById(id); }
   function announce(message) {
@@ -326,7 +330,7 @@
   function loadObraOptions() {
     window.dashboardApi.getJson('/api/ancine/obra-options')
       .then(function (data) {
-        OBRA_OPTIONS = data || { paisOrigem: [] };
+        OBRA_OPTIONS = data || { paisOrigem: [], tipoObra: [], subtipoObra: [] };
         render();
       })
       .catch(function () {});
@@ -381,12 +385,12 @@
     var seq = ++_bilheteriaReqSeq;
     var qs = buildFilmesQueryString(); // mesmos filtros da sidebar
     window.dashboardApi.getLatest('box-office-summary', '/api/ancine/bilheteria-resumo' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _bilheteriaReqSeq) return; // resposta de uma requisição antiga (superada)
         state.bilheteriaResumo = data;
         state.bilheteriaLoadedQs = qs;
         renderBilheteriaResumo();
+        renderIngressoResumo();
       })
       .catch(function () {});
   }
@@ -397,12 +401,13 @@
     var seq = ++_bilheteriaGraficoReqSeq;
     var qs = buildFilmesQueryString();
     window.dashboardApi.getLatest('box-office-chart', '/api/ancine/bilheteria-grafico' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _bilheteriaGraficoReqSeq) return;
         state.bilheteriaGrafico = (data && data.porAno) || [];
         state.bilheteriaLoadedQs = qs;
         renderBilheteriaCharts();
+        renderIngressoCharts();
+        renderIngressoPctCharts();
       })
       .catch(function () {});
   }
@@ -413,50 +418,165 @@
     var seq = ++_bilheteriaSemanalReqSeq;
     var qs = buildFilmesQueryString();
     window.dashboardApi.getLatest('box-office-weekly', '/api/ancine/bilheteria-semanal' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _bilheteriaSemanalReqSeq) return;
         state.bilheteriaSemanal = (data && data.porSemana) || [];
         state.bilheteriaLoadedQs = qs;
         drawBilheteriaLineChart();
+        renderIngressoPctCharts();
       })
       .catch(function () {});
+  }
+
+  // Detalhamento Brasileira/Estrangeira embaixo de um indicador — barra de
+  // proporção (relativa à soma dos dois, não ao total do card) + os valores.
+  function fillStatSplit(prefix, cpbVal, roeVal, fmt) {
+    var cpbFill = $(prefix + '-fill-cpb'), roeFill = $(prefix + '-fill-roe');
+    var cpbEl = $(prefix + '-cpb'), roeEl = $(prefix + '-roe');
+    if (!cpbFill || !roeFill || !cpbEl || !roeEl) return;
+    cpbEl.textContent = fmt(cpbVal);
+    roeEl.textContent = fmt(roeVal);
+    var cpb = cpbVal || 0, roe = roeVal || 0, sum = cpb + roe;
+    cpbFill.style.width = (sum > 0 ? cpb / sum * 100 : 0) + '%';
+    roeFill.style.width = (sum > 0 ? roe / sum * 100 : 0) + '%';
   }
 
   function renderBilheteriaResumo() {
     var r = state.bilheteriaResumo;
     if (!r) return;
-    $('bh-publico').textContent = fmtInt(r.publico);
+    $('bh-publico').textContent = fmtMillion(r.publico);
+    $('bh-publico-pagante').textContent = fmtMillion(r.publicoPagante);
+    $('bh-renda').textContent = fmtMillion(r.rendaTotal);
+    $('bh-pmi').textContent = fmtBRL(r.pmi);
     $('bh-dias').textContent = fmtInt(r.diasExibicao);
     $('bh-sessoes').textContent = fmtInt(r.sessoes);
     $('bh-titulos').textContent = fmtInt(r.titulosDistintos);
     $('bh-salas').textContent = fmtInt(r.salasDistintas);
+
+    var pt = r.porTipo || {};
+    var cpb = pt.CPB || {}, roe = pt.ROE || {};
+    fillStatSplit('bh-publico', cpb.publico, roe.publico, fmtMillion);
+    fillStatSplit('bh-publico-pagante', cpb.publicoPagante, roe.publicoPagante, fmtMillion);
+    fillStatSplit('bh-renda', cpb.rendaTotal, roe.rendaTotal, fmtMillion);
+    fillStatSplit('bh-pmi', cpb.pmi, roe.pmi, fmtBRL);
+    fillStatSplit('bh-sessoes', cpb.sessoes, roe.sessoes, fmtInt);
+    fillStatSplit('bh-titulos', cpb.titulosDistintos, roe.titulosDistintos, fmtInt);
+  }
+
+  // Mesma ideia de fillStatSplit, para N categorias (tipo de ingresso) — a
+  // cor de cada segmento já vem embutida no HTML (style inline por card),
+  // aqui só ajustamos a largura (proporção) e o texto de cada valor.
+  function fillStatSplitN(prefix, values, fmt) {
+    var sum = 0;
+    TICKET_CATEGORIES.forEach(function (c) { sum += values[c.key] || 0; });
+    TICKET_CATEGORIES.forEach(function (c) {
+      var fill = $(prefix + '-fill-' + c.key), valEl = $(prefix + '-' + c.key);
+      if (!fill || !valEl) return;
+      var v = values[c.key] || 0;
+      fill.style.width = (sum > 0 ? v / sum * 100 : 0) + '%';
+      valEl.textContent = fmt(values[c.key]);
+    });
+  }
+
+  function renderIngressoResumo() {
+    var r = state.bilheteriaResumo;
+    if (!r) return;
+    $('ing-publico').textContent = fmtMillion(r.publico);
+    $('ing-publico-pagante').textContent = fmtMillion(r.publicoPagante);
+    $('ing-renda').textContent = fmtMillion(r.rendaTotal);
+    $('ing-pmi').textContent = fmtBRL(r.pmi);
+    $('ing-sessoes').textContent = fmtInt(r.sessoes);
+    $('ing-titulos').textContent = fmtInt(r.titulosDistintos);
+    $('ing-salas').textContent = fmtInt(r.salasDistintas);
+    $('ing-dias').textContent = fmtInt(r.diasExibicao);
+
+    var pt = r.porTipoIngresso || {};
+    var publico = {}, renda = {}, pmi = {};
+    TICKET_CATEGORIES.forEach(function (c) {
+      var v = pt[c.key] || {};
+      publico[c.key] = v.publico; renda[c.key] = v.rendaTotal; pmi[c.key] = v.pmi;
+    });
+    fillStatSplitN('ing-publico', publico, fmtMillion);
+    fillStatSplitN('ing-renda', renda, fmtMillion);
+    fillStatSplitN('ing-pmi', pmi, fmtBRL);
   }
 
   /* ---------------- Bilheteria: gráficos (D3) ---------------- */
   var _bhResizeObservers = null;
+  var _ingResizeObservers = null;
+
+  // Duas dimensões de segmentação reaproveitadas pelas abas Bilheteria
+  // (Brasileiro × Estrangeiro) e Ingresso (tipo de ingresso).
+  var NACIONALIDADE_CATEGORIES = [
+    { key: 'cpb', label: 'Brasileiro', color: '--cpb-color' },
+    { key: 'roe', label: 'Estrangeiro', color: '--roe-color' }
+  ];
+  var TICKET_CATEGORIES = [
+    { key: 'inteira', label: 'Inteira', color: '--map-green' },
+    { key: 'meia', label: 'Meia-entrada', color: '--map-purple' },
+    { key: 'promocional', label: 'Promocional', color: '--accent' },
+    { key: 'cortesia', label: 'Cortesia', color: '--map-rose' }
+  ];
+
+  // Uma linha (barras por ano + pizza de participação) por métrica, nessa
+  // ordem — `fields` mapeia cada categoria para o campo correspondente em
+  // state.bilheteriaGrafico (a mesma consulta serve as duas abas: tipo de
+  // ingresso é ortogonal a CPB/ROE, então os campos de ambas convivem no
+  // mesmo registro por ano).
+  var BILHETERIA_CHART_METRICS = [
+    { key: 'publico', label: 'Público', fmt: fmtInt, fields: { cpb: 'publicoCpb', roe: 'publicoRoe' } },
+    { key: 'renda',   label: 'Renda',   fmt: fmtBRL, fields: { cpb: 'rendaCpb',   roe: 'rendaRoe' } },
+    { key: 'sessoes', label: 'Sessões', fmt: fmtInt, fields: { cpb: 'sessoesCpb', roe: 'sessoesRoe' } }
+  ];
+  var INGRESSO_CHART_METRICS = [
+    { key: 'publico', label: 'Público', fmt: fmtInt, fields: { inteira: 'publicoInteira', meia: 'publicoMeia', promocional: 'publicoPromocional', cortesia: 'publicoCortesia' } },
+    { key: 'renda',   label: 'Renda',   fmt: fmtBRL, fields: { inteira: 'rendaInteira',   meia: 'rendaMeia',   promocional: 'rendaPromocional',   cortesia: 'rendaCortesia' } }
+  ];
+
+  // Desenha as N linhas (barra empilhada + pizza) de `metrics`, segmentadas
+  // por `categories` — usada tanto pela aba Bilheteria (prefix 'bh') quanto
+  // pela Ingresso (prefix 'ing').
+  function drawSegmentedCharts(prefix, metrics, categories) {
+    metrics.forEach(function (m) {
+      var mapped = state.bilheteriaGrafico.map(function (d) {
+        var row = { ano: d.ano };
+        categories.forEach(function (c) { row[c.key] = d[m.fields[c.key]] || 0; });
+        return row;
+      });
+      var totals = {};
+      categories.forEach(function (c) { totals[c.key] = 0; });
+      mapped.forEach(function (row) { categories.forEach(function (c) { totals[c.key] += row[c.key]; }); });
+
+      drawSegmentedBarChart(prefix + '-chart-bar-' + m.key, prefix + '-legend-bar-' + m.key, prefix + '-tooltip-bar-' + m.key, categories, mapped, m.fmt);
+      drawSegmentedPie(prefix + '-chart-pie-' + m.key, prefix + '-legend-pie-' + m.key, prefix + '-tooltip-pie-' + m.key, categories, totals, m.label, m.fmt);
+    });
+  }
 
   function renderBilheteriaCharts() {
     if (!window.d3 || !state.bilheteriaGrafico) return;
-    drawBilheteriaBarChart();
-    var totCpb = 0, totRoe = 0, sessCpb = 0, sessRoe = 0;
-    state.bilheteriaGrafico.forEach(function (d) {
-      totCpb += d.publicoCpb; totRoe += d.publicoRoe;
-      sessCpb += d.sessoesCpb; sessRoe += d.sessoesRoe;
-    });
-    drawBilheteriaPie('bh-chart-pie-publico', 'bh-legend-pie-publico', 'bh-tooltip-pie-publico', totCpb, totRoe, 'Público');
-    drawBilheteriaPie('bh-chart-pie-sessoes', 'bh-legend-pie-sessoes', 'bh-tooltip-pie-sessoes', sessCpb, sessRoe, 'Sessões');
+    drawSegmentedCharts('bh', BILHETERIA_CHART_METRICS, NACIONALIDADE_CATEGORIES);
 
-    // redesenha ao redimensionar (uma vez só, observando os 3 painéis)
+    // redesenha ao redimensionar (uma vez só, observando os painéis)
     if (!_bhResizeObservers) {
       _bhResizeObservers = new ResizeObserver(function () {
-        drawBilheteriaBarChart();
-        drawBilheteriaPie('bh-chart-pie-publico', 'bh-legend-pie-publico', 'bh-tooltip-pie-publico', totCpb, totRoe, 'Público');
-        drawBilheteriaPie('bh-chart-pie-sessoes', 'bh-legend-pie-sessoes', 'bh-tooltip-pie-sessoes', sessCpb, sessRoe, 'Sessões');
+        drawSegmentedCharts('bh', BILHETERIA_CHART_METRICS, NACIONALIDADE_CATEGORIES);
         drawBilheteriaLineChart();
       });
-      var row = $('bh-charts-row');
+      var row = $('bh-charts-row-publico');
       if (row) _bhResizeObservers.observe(row);
+    }
+  }
+
+  function renderIngressoCharts() {
+    if (!window.d3 || !state.bilheteriaGrafico) return;
+    drawSegmentedCharts('ing', INGRESSO_CHART_METRICS, TICKET_CATEGORIES);
+
+    if (!_ingResizeObservers) {
+      _ingResizeObservers = new ResizeObserver(function () {
+        drawSegmentedCharts('ing', INGRESSO_CHART_METRICS, TICKET_CATEGORIES);
+      });
+      var row = $('ing-charts-row-publico');
+      if (row) _ingResizeObservers.observe(row);
     }
   }
 
@@ -472,16 +592,19 @@
     });
   }
 
-  function drawBilheteriaBarChart() {
-    var svgEl = $('bh-chart-bar');
+  // Barra empilhada por ano com N categorias — só o segmento que está
+  // exposto no topo da pilha (o mais alto entre os != 0) ganha canto
+  // arredondado; os demais ficam com um pequeno espaçamento (GAP) entre si.
+  function drawSegmentedBarChart(svgId, legendId, tooltipId, categories, data, fmt) {
+    var svgEl = $(svgId);
     if (!svgEl || !svgEl.parentElement) return;
-    var data = state.bilheteriaGrafico;
     var box = svgEl.parentElement.getBoundingClientRect();
     var W = box.width, H = box.height;
     if (W <= 0 || H <= 0) return;
 
-    var cpbColor = cssVar('--cpb-color'), roeColor = cssVar('--roe-color');
-    chartLegend('bh-legend-bar', [{ color: cpbColor, label: 'CPB (brasileiras)' }, { color: roeColor, label: 'ROE (estrangeiras)' }]);
+    fmt = fmt || fmtInt;
+    var colors = categories.map(function (c) { return cssVar(c.color); });
+    chartLegend(legendId, categories.map(function (c, i) { return { color: colors[i], label: c.label }; }));
 
     var margin = { top: 14, right: 10, bottom: 22, left: 44 };
     var iw = Math.max(10, W - margin.left - margin.right);
@@ -492,8 +615,21 @@
     svg.selectAll('*').remove();
     var g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
 
+    function total(d) { return categories.reduce(function (s, c) { return s + (d[c.key] || 0); }, 0); }
+    function cumulative(d, uptoIndex) {
+      var sum = 0;
+      for (var k = 0; k < uptoIndex; k++) sum += d[categories[k].key] || 0;
+      return sum;
+    }
+    function topmostNonZeroIndex(d) {
+      for (var k = categories.length - 1; k >= 0; k--) {
+        if ((d[categories[k].key] || 0) > 0) return k;
+      }
+      return -1;
+    }
+
     var x = d3.scaleBand().domain(data.map(function (d) { return d.ano; })).range([0, iw]).padding(0.32);
-    var maxTotal = d3.max(data, function (d) { return d.publicoCpb + d.publicoRoe; }) || 1;
+    var maxTotal = d3.max(data, total) || 1;
     var y = d3.scaleLinear().domain([0, maxTotal]).nice().range([ih, 0]);
 
     g.append('g').attr('class', 'chart-grid')
@@ -506,18 +642,17 @@
       .call(function (sel) { sel.select('.domain').remove(); });
 
     var GAP = 2; // 2px surface gap entre os segmentos empilhados
-    var tip = $('bh-tooltip-bar');
+    var tip = $(tooltipId);
     var panel = svgEl.parentElement;
 
     function showTip(event, d) {
       var p = d3.pointer(event, panel);
-      var total = d.publicoCpb + d.publicoRoe;
       tip.style.display = 'block';
       tip.style.left = p[0] + 'px'; tip.style.top = p[1] + 'px'; tip.style.transform = 'translate(14px,-50%)';
-      tip.innerHTML = '<div class="tt-title">' + d.ano + '</div>' +
-        '<div class="tt-row"><span>CPB</span><b>' + fmtInt(d.publicoCpb) + '</b></div>' +
-        '<div class="tt-row"><span>ROE</span><b>' + fmtInt(d.publicoRoe) + '</b></div>' +
-        '<div class="tt-top">Total: ' + fmtInt(total) + '</div>';
+      var rows = categories.map(function (c) {
+        return '<div class="tt-row"><span>' + c.label + '</span><b>' + fmt(d[c.key]) + '</b></div>';
+      }).join('');
+      tip.innerHTML = '<div class="tt-title">' + d.ano + '</div>' + rows + '<div class="tt-top">Total: ' + fmt(total(d)) + '</div>';
     }
     function hideTip() { tip.style.display = 'none'; }
 
@@ -543,40 +678,33 @@
       .attr('transform', function (d) { return 'translate(' + x(d.ano) + ',0)'; })
       .on('mousemove', showTip).on('mouseleave', hideTip);
 
-    // CPB — segmento de baixo, encostado na base. Só ganha topo arredondado
-    // quando é ele o extremo exposto da barra (ROE = 0).
-    bars.append('path').attr('class', 'chart-mark')
-      .attr('d', function (d) {
-        var yTop = y(d.publicoCpb) - (d.publicoRoe > 0 ? GAP / 2 : 0);
-        var h = ih - yTop;
-        return d.publicoRoe > 0 ? rectPath(0, yTop, x.bandwidth(), h) : roundedTopPath(0, yTop, x.bandwidth(), h, 3);
-      })
-      .attr('fill', cpbColor);
-
-    // ROE — segmento de cima, sempre o extremo exposto quando presente.
-    bars.append('path').attr('class', 'chart-mark')
-      .attr('d', function (d) {
-        if (d.publicoRoe <= 0) return '';
-        var yTop = y(d.publicoCpb + d.publicoRoe);
-        var yBottom = y(d.publicoCpb) - GAP / 2;
-        return roundedTopPath(0, yTop, x.bandwidth(), yBottom - yTop, 3);
-      })
-      .attr('fill', roeColor);
+    categories.forEach(function (c, i) {
+      bars.append('path').attr('class', 'chart-mark')
+        .attr('d', function (d) {
+          var val = d[c.key] || 0;
+          if (val <= 0) return '';
+          var base = cumulative(d, i);
+          var isTop = topmostNonZeroIndex(d) === i;
+          var yTop = y(base + val) + (isTop ? 0 : GAP / 2);
+          var yBottom = y(base) - (i === 0 ? 0 : GAP / 2);
+          var h = yBottom - yTop;
+          return isTop ? roundedTopPath(0, yTop, x.bandwidth(), h, 3) : rectPath(0, yTop, x.bandwidth(), h);
+        })
+        .attr('fill', colors[i]);
+    });
   }
 
-  function drawBilheteriaPie(svgId, legendId, tooltipId, cpbVal, roeVal, seriesLabel) {
+  // Pizza de participação com N categorias.
+  function drawSegmentedPie(svgId, legendId, tooltipId, categories, values, seriesLabel, fmtVal) {
     var svgEl = $(svgId);
     if (!svgEl || !svgEl.parentElement) return;
     var box = svgEl.parentElement.getBoundingClientRect();
     var W = box.width, H = box.height;
     if (W <= 0 || H <= 0) return;
 
-    var cpbColor = cssVar('--cpb-color'), roeColor = cssVar('--roe-color');
-    var total = cpbVal + roeVal;
-    var data = [
-      { key: 'CPB', label: 'CPB (brasileiras)', value: cpbVal, color: cpbColor },
-      { key: 'ROE', label: 'ROE (estrangeiras)', value: roeVal, color: roeColor }
-    ];
+    fmtVal = fmtVal || fmtInt;
+    var data = categories.map(function (c) { return { label: c.label, value: values[c.key] || 0, color: cssVar(c.color) }; });
+    var total = data.reduce(function (s, d) { return s + d.value; }, 0);
     chartLegend(legendId, data.map(function (d) { return { color: d.color, label: d.label }; }));
 
     var radius = Math.min(W, H) / 2 - 8;
@@ -599,20 +727,29 @@
       .on('mousemove', function (event, d) {
         var p = d3.pointer(event, panel);
         var pct = total ? (d.data.value / total * 100) : 0;
-        tip.style.display = 'block';
-        tip.style.left = (p[0] + W / 2) + 'px'; tip.style.top = (p[1] + H / 2) + 'px'; tip.style.transform = 'translate(14px,-50%)';
         tip.innerHTML = '<div class="tt-title">' + d.data.label + '</div>' +
-          '<div class="tt-row"><span>' + seriesLabel + '</span><b>' + fmtInt(d.data.value) + '</b></div>' +
+          '<div class="tt-row"><span>' + seriesLabel + '</span><b>' + fmtVal(d.data.value) + '</b></div>' +
           '<div class="tt-top">' + pct.toFixed(1) + '% do total</div>';
+        tip.style.display = 'block';
+        // Perto da borda direita da tela: joga o balão pra esquerda do
+        // cursor em vez de deixá-lo estourar pra fora da viewport.
+        var overflowsRight = box.left + p[0] + 14 + tip.offsetWidth > window.innerWidth;
+        tip.style.left = p[0] + 'px'; tip.style.top = p[1] + 'px';
+        tip.style.transform = overflowsRight ? 'translate(calc(-100% - 14px),-50%)' : 'translate(14px,-50%)';
       })
       .on('mouseleave', function () { tip.style.display = 'none'; });
 
-    // rótulo de percentual direto na fatia (cabe bem com só 2 fatias)
+    // rótulo de percentual direto na fatia — só quando cabe (fatia grande o
+    // bastante); com 4 categorias, fatias pequenas (ex.: cortesia) ficam só
+    // com a legenda embaixo, pra não virar texto ilegível espremido.
     g.selectAll('.chart-slice-label').data(arcs).join('text')
       .attr('class', 'chart-slice-label')
       .attr('transform', function (d) { return 'translate(' + arc.centroid(d) + ')'; })
       .attr('fill', '#fff')
-      .text(function (d) { return total ? Math.round(d.data.value / total * 100) + '%' : '0%'; });
+      .text(function (d) {
+        var pct = total ? d.data.value / total * 100 : 0;
+        return pct >= 8 ? Math.round(pct) + '%' : '';
+      });
   }
 
   var CAT_COLOR_COUNT = 8;
@@ -732,33 +869,195 @@
       });
   }
 
-  /* ---------------- Aba Países (data/ancine/, via /api/ancine/paises) ---------------- */
-  var _paisesDebounce = null;
-  var _paisesReqSeq = 0;
-  var _paisesResizeObserver = null;
+  /* ---------------- Ingresso: linhas de participação % por tipo ---------------- */
+  var _ingPctResizeObserver = null;
 
-  function scheduleLoadPaises() {
-    if (_paisesDebounce) clearTimeout(_paisesDebounce);
-    _paisesDebounce = setTimeout(loadPaises, 350);
+  function capitalize(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+  // Categorias de tipo de ingresso mapeadas para os campos de state.bilheteriaGrafico/
+  // state.bilheteriaSemanal (publicoInteira, rendaMeia, ...) — Cortesia não entra nos
+  // gráficos de Renda porque a renda de cortesia é sempre 0 (entrada gratuita).
+  function ticketPctCategories(field) {
+    var cats = field === 'renda' ? TICKET_CATEGORIES.filter(function (c) { return c.key !== 'cortesia'; }) : TICKET_CATEGORIES;
+    return cats.map(function (c) { return { key: c.key, label: c.label, color: c.color, field: field + capitalize(c.key) }; });
   }
 
-  function loadPaises() {
-    var seq = ++_paisesReqSeq;
-    state.paisesLoading = true;
-    var qs = buildFilmesQueryString();
-    fetch('/api/ancine/paises' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (seq !== _paisesReqSeq) return; // resposta de uma requisição antiga (superada)
-        state.paisesRows = data || [];
-        state.paisesLoading = false;
-        state.paisesLoadedQs = qs;
-        renderPaisesPane();
+  // Converte linhas {x, <campo por categoria>} em séries {pontos:[{x, pct}]},
+  // pct relativo à soma das categorias naquele x (não ao total geral).
+  function buildPctSeries(rows, xKey, categories) {
+    return categories.map(function (c) {
+      return {
+        key: c.key, label: c.label, color: cssVar(c.color),
+        pontos: rows.map(function (r) {
+          var total = categories.reduce(function (s, cc) { return s + (r[cc.field] || 0); }, 0);
+          return { x: r[xKey], pct: total > 0 ? (r[c.field] || 0) / total * 100 : 0 };
+        })
+      };
+    });
+  }
+
+  // Gráfico de linhas genérico para participação % ao longo de x (ano ou
+  // semana cinematográfica) — uma linha por categoria (série), eixo Y fixo
+  // em 0-100%.
+  function drawPercentLineChart(svgId, legendId, tooltipId, xValues, series, xLabel) {
+    var svgEl = $(svgId);
+    if (!svgEl || !svgEl.parentElement || !window.d3 || !xValues.length) return;
+    var box = svgEl.parentElement.getBoundingClientRect();
+    var W = box.width, H = box.height;
+    if (W <= 0 || H <= 0) return;
+
+    chartLegend(legendId, series.map(function (s) { return { color: s.color, label: s.label }; }));
+    var legendItems = document.querySelectorAll('#' + legendId + ' .chart-legend-item');
+    legendItems.forEach(function (item, i) {
+      item.classList.add('is-clickable');
+      item.addEventListener('mouseenter', function () { highlight(series[i].key); });
+      item.addEventListener('mouseleave', function () { highlight(null); });
+    });
+
+    var margin = { top: 14, right: 16, bottom: 26, left: 44 };
+    var iw = Math.max(10, W - margin.left - margin.right);
+    var ih = Math.max(10, H - margin.top - margin.bottom);
+
+    var svg = d3.select(svgEl);
+    svg.attr('viewBox', '0 0 ' + W + ' ' + H).attr('width', W).attr('height', H);
+    svg.selectAll('*').remove();
+    var g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+    var x = d3.scaleLinear().domain(d3.extent(xValues)).range([0, iw]);
+    var y = d3.scaleLinear().domain([0, 100]).range([ih, 0]);
+
+    g.append('g').attr('class', 'chart-grid')
+      .call(d3.axisLeft(y).ticks(5).tickSize(-iw).tickFormat(''));
+    g.append('g').attr('class', 'chart-axis')
+      .call(d3.axisLeft(y).ticks(5).tickFormat(function (d) { return d + '%'; }));
+    g.append('g').attr('class', 'chart-axis')
+      .attr('transform', 'translate(0,' + ih + ')')
+      .call(d3.axisBottom(x).ticks(Math.min(xValues.length, 13)).tickFormat(d3.format('d')));
+
+    var line = d3.line().x(function (d) { return x(d.x); }).y(function (d) { return y(d.pct); });
+
+    var linesG = g.append('g');
+    linesG.selectAll('.chart-line').data(series).join('path')
+      .attr('class', 'chart-line')
+      .attr('d', function (d) { return line(d.pontos); })
+      .attr('stroke', function (d) { return d.color; });
+
+    var hitG = g.append('g');
+    hitG.selectAll('.chart-line-hit').data(series).join('path')
+      .attr('class', 'chart-line-hit')
+      .attr('d', function (d) { return line(d.pontos); })
+      .on('mouseenter', function (event, d) { highlight(d.key); })
+      .on('mouseleave', function () { highlight(null); });
+
+    function highlight(key) {
+      linesG.selectAll('.chart-line').classed('is-dim', function (d) { return key != null && d.key !== key; });
+      legendItems.forEach(function (item, i) { item.classList.toggle('is-dim', key != null && series[i].key !== key); });
+    }
+
+    var crosshair = g.append('line').attr('class', 'chart-axis').attr('y1', 0).attr('y2', ih).style('display', 'none');
+    var tip = $(tooltipId);
+    var panel = svgEl.parentElement;
+
+    svg.append('rect')
+      .attr('x', margin.left).attr('y', margin.top).attr('width', iw).attr('height', ih)
+      .attr('fill', 'transparent')
+      .on('mousemove', function (event) {
+        var px = d3.pointer(event, g.node())[0];
+        var target = x.invert(px);
+        var nearest = xValues.reduce(function (a, b) { return Math.abs(b - target) < Math.abs(a - target) ? b : a; });
+        crosshair.attr('x1', x(nearest)).attr('x2', x(nearest)).style('display', null);
+
+        var rows = series.map(function (s) {
+          var pt = s.pontos.filter(function (p) { return p.x === nearest; })[0];
+          return { label: s.label, color: s.color, pct: pt ? pt.pct : 0 };
+        }).sort(function (a, b) { return b.pct - a.pct; });
+
+        var p = d3.pointer(event, panel);
+        tip.style.display = 'block';
+        tip.style.left = p[0] + 'px'; tip.style.top = p[1] + 'px'; tip.style.transform = 'translate(14px,-50%)';
+        tip.innerHTML = '<div class="tt-title">' + xLabel + ' ' + nearest + '</div>' +
+          rows.map(function (r) {
+            return '<div class="tt-row"><span><span class="chart-legend-dot" style="background:' + r.color +
+              ';display:inline-block;margin-right:5px;"></span>' + r.label + '</span><b>' + r.pct.toFixed(1) + '%</b></div>';
+          }).join('');
       })
-      .catch(function () {
-        if (seq !== _paisesReqSeq) return;
-        state.paisesLoading = false;
+      .on('mouseleave', function () {
+        crosshair.style('display', 'none');
+        tip.style.display = 'none';
       });
+  }
+
+  function renderIngressoPctCharts() {
+    if (!window.d3 || !state.bilheteriaGrafico) return;
+
+    var anoRows = state.bilheteriaGrafico.slice().sort(function (a, b) { return a.ano - b.ano; });
+    var anos = anoRows.map(function (r) { return r.ano; });
+    drawPercentLineChart('ing-chart-pct-ano-publico', 'ing-legend-pct-ano-publico', 'ing-tooltip-pct-ano-publico',
+      anos, buildPctSeries(anoRows, 'ano', ticketPctCategories('publico')), 'Ano');
+    drawPercentLineChart('ing-chart-pct-ano-renda', 'ing-legend-pct-ano-renda', 'ing-tooltip-pct-ano-renda',
+      anos, buildPctSeries(anoRows, 'ano', ticketPctCategories('renda')), 'Ano');
+
+    if (state.bilheteriaSemanal && state.bilheteriaSemanal.length) {
+      var porSemana = {};
+      state.bilheteriaSemanal.forEach(function (d) {
+        var agg = porSemana[d.semana] || (porSemana[d.semana] = {
+          semana: d.semana, publicoInteira: 0, publicoMeia: 0, publicoPromocional: 0, publicoCortesia: 0,
+          rendaInteira: 0, rendaMeia: 0, rendaPromocional: 0
+        });
+        agg.publicoInteira += d.publicoInteira || 0;
+        agg.publicoMeia += d.publicoMeia || 0;
+        agg.publicoPromocional += d.publicoPromocional || 0;
+        agg.publicoCortesia += d.publicoCortesia || 0;
+        agg.rendaInteira += d.rendaInteira || 0;
+        agg.rendaMeia += d.rendaMeia || 0;
+        agg.rendaPromocional += d.rendaPromocional || 0;
+      });
+      var semanaRows = Object.keys(porSemana).map(function (k) { return porSemana[k]; })
+        .sort(function (a, b) { return a.semana - b.semana; });
+      var semanas = semanaRows.map(function (r) { return r.semana; });
+      drawPercentLineChart('ing-chart-pct-semana-publico', 'ing-legend-pct-semana-publico', 'ing-tooltip-pct-semana-publico',
+        semanas, buildPctSeries(semanaRows, 'semana', ticketPctCategories('publico')), 'Semana');
+      drawPercentLineChart('ing-chart-pct-semana-renda', 'ing-legend-pct-semana-renda', 'ing-tooltip-pct-semana-renda',
+        semanas, buildPctSeries(semanaRows, 'semana', ticketPctCategories('renda')), 'Semana');
+    }
+
+    if (!_ingPctResizeObserver) {
+      _ingPctResizeObserver = new ResizeObserver(function () { renderIngressoPctCharts(); });
+      var row = $('ing-charts-row-pct-ano');
+      if (row) _ingPctResizeObserver.observe(row);
+    }
+  }
+
+  /* ---------------- Aba Mapa (data/ancine/, via /api/ancine/paises) ---------------- */
+  var _mapaDebounce = null;
+  var _mapaReqSeq = 0;
+  var _mapaResizeObserver = null;
+
+  function scheduleLoadMapa() {
+    if (_mapaDebounce) clearTimeout(_mapaDebounce);
+    _mapaDebounce = setTimeout(loadMapa, 350);
+  }
+
+  function loadMapa() {
+    var seq = ++_mapaReqSeq;
+    state.mapaLoading = true;
+    var qs = buildFilmesQueryString();
+    var suffix = qs ? '?' + qs : '';
+    Promise.all([
+      window.dashboardApi.getLatest('mapa-paises', '/api/ancine/paises' + suffix),
+      window.dashboardApi.getLatest('mapa-uf', '/api/ancine/mapa-uf' + suffix)
+    ]).then(function (results) {
+      if (seq !== _mapaReqSeq) return; // resposta de uma requisição antiga (superada)
+      state.mapaRows = results[0] || [];
+      state.mapaUfRows = results[1] || [];
+      state.mapaLoading = false;
+      state.mapaLoadedQs = qs;
+      renderMapaPane();
+      renderMapaUfPanel();
+    }).catch(function () {
+      if (seq !== _mapaReqSeq) return;
+      state.mapaLoading = false;
+    });
   }
 
   function ensureWorldAtlas(cb) {
@@ -766,7 +1065,6 @@
     if (_worldLoading) { setTimeout(function () { ensureWorldAtlas(cb); }, 120); return; }
     _worldLoading = true;
     window.dashboardApi.getJson('/static/vendor/countries-110m.json')
-      .then(function (r) { return r.json(); })
       .then(function (topo) {
         _world = window.topojson.feature(topo, topo.objects.countries).features;
         cb();
@@ -774,10 +1072,21 @@
       .catch(function () {});
   }
 
+  // Uma linha (mapa + barra horizontal) por métrica, nessa ordem.
+  var MAPA_METRICS = [
+    { key: 'publicoTotal', label: 'PÚBLICO',        unit: 'público', color: '--map-green',  faint: '--map-green-faint',  fmtBar: fmtMillion },
+    { key: 'sessoes',      label: 'SESSÕES',        unit: 'sessões', color: '--map-purple', faint: '--map-purple-faint', fmtBar: fmtMillion },
+    { key: 'rendaTotal',   label: 'RENDA',          unit: 'R$',      color: '--map-teal',   faint: '--map-teal-faint',   fmtBar: fmtMillion },
+    { key: 'pmi',          label: 'PMI',            unit: 'R$',      color: '--map-rose',   faint: '--map-rose-faint',   fmtBar: fmtBRL },
+    { key: 'qtdTitulos',   label: 'QTD. TÍTULOS',   unit: 'títulos', color: '--accent',     faint: '--map-accent-faint', fmtBar: fmtInt }
+  ];
+
   function paisTipFn(entry) {
     return '<div class="tt-title">' + toTitleCase(entry.nome) + '</div>' +
       '<div class="tt-row"><span>Público</span><b>' + fmtInt(entry.publicoTotal) + '</b></div>' +
       '<div class="tt-row"><span>Sessões</span><b>' + fmtInt(entry.sessoes) + '</b></div>' +
+      '<div class="tt-row"><span>Renda</span><b>R$ ' + fmtBRL(entry.rendaTotal) + '</b></div>' +
+      '<div class="tt-row"><span>PMI</span><b>R$ ' + fmtBRL(entry.pmi) + '</b></div>' +
       '<div class="tt-row"><span>Títulos</span><b>' + fmtInt(entry.qtdTitulos) + '</b></div>';
   }
 
@@ -801,7 +1110,7 @@
     svg.append('path').attr('d', path({ type: 'Sphere' })).attr('fill', sphere).attr('stroke', sphereS).attr('stroke-width', 0.6);
     svg.append('path').attr('d', path(d3.geoGraticule10())).attr('fill', 'none').attr('stroke', grid).attr('stroke-width', 0.5);
 
-    var data = state.paisesRows;
+    var data = state.mapaRows;
     var byIso = {};
     data.forEach(function (r) {
       var iso = PAIS_ISO[r.nome];
@@ -842,7 +1151,12 @@
       .attr('fill', labelClr).attr('font-size', 10).attr('letter-spacing', 2.5)
       .attr('font-family', 'JetBrains Mono, monospace').style('pointer-events', 'none');
 
-    // Legenda em gradiente (0 até o máximo do valor mapeado)
+    drawChoroplethLegend(svg, w, h, holderId, accent, accentFaint, legendClr, max, maxLabel);
+  }
+
+  // Legenda em gradiente (0 até o máximo do valor mapeado) — reaproveitada
+  // pelos mapas de país e pelo mapa do Brasil (UF/município).
+  function drawChoroplethLegend(svg, w, h, holderId, accent, accentFaint, legendClr, max, unitLabel) {
     var gradId = 'choro-grad-' + holderId;
     var lw = 120, lh = 8, lx = w - lw - 16, ly = h - 24;
     var defs = svg.append('defs');
@@ -852,44 +1166,322 @@
     var lg = svg.append('g').attr('transform', 'translate(' + lx + ',' + ly + ')');
     lg.append('rect').attr('width', lw).attr('height', lh).attr('rx', 2).attr('fill', 'url(#' + gradId + ')').attr('opacity', 0.9);
     lg.append('text').attr('x', 0).attr('y', lh + 11).attr('fill', legendClr).attr('font-size', 9).attr('font-family', 'JetBrains Mono, monospace').text('0');
-    lg.append('text').attr('x', lw).attr('y', lh + 11).attr('text-anchor', 'end').attr('fill', legendClr).attr('font-size', 9).attr('font-family', 'JetBrains Mono, monospace').text(fmtVotes(max) + ' ' + maxLabel);
+    lg.append('text').attr('x', lw).attr('y', lh + 11).attr('text-anchor', 'end').attr('fill', legendClr).attr('font-size', 9).attr('font-family', 'JetBrains Mono, monospace').text(fmtVotes(max) + ' ' + unitLabel);
   }
 
-  function drawPaisesMaps() {
-    ensureWorldAtlas(function () {
-      drawPaisMap('paises-map-holder-publico', 'paises-tooltip-publico', 'publicoTotal', 'público', '--map-green',  '--map-green-faint');
-      drawPaisMap('paises-map-holder-sessoes', 'paises-tooltip-sessoes', 'sessoes',      'sessões', '--map-purple', '--map-purple-faint');
+  function ensureMapaRows() {
+    var wrap = $('mapa-rows');
+    if (!wrap || wrap.children.length) return;
+    MAPA_METRICS.forEach(function (m) {
+      wrap.appendChild(el('div', { class: 'map-row' }, [
+        el('div', { class: 'map-section' }, [
+          el('div', { class: 'map-label' }, 'PAÍS PRODUTOR · ' + m.label),
+          el('div', { class: 'map-box' }, [
+            el('div', { class: 'map-holder', id: 'mapa-map-holder-' + m.key }),
+            el('div', { class: 'tooltip', id: 'mapa-tooltip-' + m.key })
+          ])
+        ]),
+        el('div', { class: 'map-section' }, [
+          el('div', { class: 'map-label' }, 'PAÍS PRODUTOR · ' + m.label),
+          el('div', { class: 'chart-box', id: 'mapa-bar-' + m.key })
+        ])
+      ]));
     });
   }
 
-  function renderPaisesBars() {
-    var wrap = $('paises-bars-row');
-    if (!wrap || !state.paisesRows.length) return;
-    wrap.innerHTML = '';
-    var rows = state.paisesRows;
+  function drawMapaMaps() {
+    ensureWorldAtlas(function () {
+      MAPA_METRICS.forEach(function (m) {
+        drawPaisMap('mapa-map-holder-' + m.key, 'mapa-tooltip-' + m.key, m.key, m.unit, m.color, m.faint);
+      });
+    });
+  }
 
-    function top20(key, color) {
+  function renderMapaBars() {
+    if (!state.mapaRows.length) return;
+    var rows = state.mapaRows;
+
+    function topN(key, color) {
       return rows.slice()
         .sort(function (a, b) { return (b[key] || 0) - (a[key] || 0); })
-        .slice(0, 20)
+        .slice(0, 10)
         .map(function (r) { return { label: toTitleCase(r.nome), n: r[key] || 0, color: color }; });
     }
 
-    wrap.appendChild(hbarChart('TOP 20 PAÍS × PÚBLICO', top20('publicoTotal', cssVar('--map-green')), fmtInt));
-    wrap.appendChild(hbarChart('TOP 20 PAÍS × SESSÕES', top20('sessoes', cssVar('--map-purple')), fmtInt));
-    wrap.appendChild(hbarChart('TOP 20 PAÍS × TÍTULOS', top20('qtdTitulos', cssVar('--accent')), fmtInt));
+    MAPA_METRICS.forEach(function (m) {
+      var box = $('mapa-bar-' + m.key);
+      if (!box) return;
+      box.innerHTML = '';
+      box.appendChild(hbarChart('TOP 10 PAÍS × ' + m.label, topN(m.key, cssVar(m.color)), m.fmtBar));
+    });
   }
 
-  function renderPaisesPane() {
+  function renderMapaPane() {
     if (!window.d3 || !window.topojson) return;
-    drawPaisesMaps();
-    renderPaisesBars();
+    ensureMapaRows();
+    drawMapaMaps();
+    renderMapaBars();
 
-    if (!_paisesResizeObserver) {
-      _paisesResizeObserver = new ResizeObserver(function () { drawPaisesMaps(); });
-      var row = $('paises-map-row');
-      if (row) _paisesResizeObserver.observe(row);
+    if (!_mapaResizeObserver) {
+      _mapaResizeObserver = new ResizeObserver(function () {
+        drawMapaMaps();
+        if (state.mapaUfRows && state.mapaUfRows.length) UF_SALA_METRICS.forEach(renderUfSalaRow);
+      });
+      var row = $('mapa-rows');
+      if (row) _mapaResizeObserver.observe(row);
     }
+  }
+
+  /* ---------------- Mapa: Local da Sala de Exibição (UF/Município) ---------------- */
+  var UF_NAMES = {
+    AC: 'Acre', AL: 'Alagoas', AP: 'Amapá', AM: 'Amazonas', BA: 'Bahia',
+    CE: 'Ceará', DF: 'Distrito Federal', ES: 'Espírito Santo', GO: 'Goiás',
+    MA: 'Maranhão', MT: 'Mato Grosso', MS: 'Mato Grosso do Sul', MG: 'Minas Gerais',
+    PA: 'Pará', PB: 'Paraíba', PR: 'Paraná', PE: 'Pernambuco', PI: 'Piauí',
+    RJ: 'Rio de Janeiro', RN: 'Rio Grande do Norte', RS: 'Rio Grande do Sul',
+    RO: 'Rondônia', RR: 'Roraima', SC: 'Santa Catarina', SP: 'São Paulo',
+    SE: 'Sergipe', TO: 'Tocantins'
+  };
+  var BRASIL_GEOJSON_URL = 'https://cdn.jsdelivr.net/gh/codeforamerica/click_that_hood@master/public/data/brazil-states.geojson';
+  // Código IBGE de cada UF — usado para buscar o geojson de municípios
+  // (github.com/tbrugz/geodata-br, um arquivo "geojs-<código>-mun.json" por UF).
+  var UF_TO_IBGE = {
+    AC: '12', AL: '27', AP: '16', AM: '13', BA: '29', CE: '23', DF: '53', ES: '32', GO: '52',
+    MA: '21', MT: '51', MS: '50', MG: '31', PA: '15', PB: '25', PR: '41', PE: '26', PI: '22',
+    RJ: '33', RN: '24', RS: '43', RO: '11', RR: '14', SC: '42', SP: '35', SE: '28', TO: '17'
+  };
+  var COMBINING_MARKS_RE = /[\u0300-\u036f]/g;
+  function stripAccents(s) { return (s || '').normalize('NFD').replace(COMBINING_MARKS_RE, ''); }
+  function normName(s) { return stripAccents(s).toUpperCase().trim(); }
+
+  var _brasilGeo = null, _brasilGeoLoading = false;
+  function ensureBrasilGeo(cb) {
+    if (_brasilGeo) { cb(); return; }
+    if (_brasilGeoLoading) { setTimeout(function () { ensureBrasilGeo(cb); }, 120); return; }
+    _brasilGeoLoading = true;
+    fetch(BRASIL_GEOJSON_URL).then(function (r) { return r.json(); })
+      .then(function (geo) { _brasilGeo = geo.features; cb(); })
+      .catch(function () { _brasilGeoLoading = false; });
+  }
+
+  var _municipiosGeoCache = {};
+  function ensureMunicipiosGeo(uf, cb) {
+    if (_municipiosGeoCache[uf]) { cb(_municipiosGeoCache[uf]); return; }
+    var ibge = UF_TO_IBGE[uf];
+    if (!ibge) { cb(null); return; }
+    fetch('https://cdn.jsdelivr.net/gh/tbrugz/geodata-br@master/geojson/geojs-' + ibge + '-mun.json')
+      .then(function (r) { return r.json(); })
+      .then(function (geo) { _municipiosGeoCache[uf] = geo.features; cb(geo.features); })
+      .catch(function () { cb(null); });
+  }
+
+  // Uma linha (mapa do Brasil + barra horizontal) por métrica.
+  var UF_SALA_METRICS = [
+    { key: 'publico',    label: 'PÚBLICO', unit: 'público', color: '--map-green',  faint: '--map-green-faint',  fmtBar: fmtMillion },
+    { key: 'rendaTotal', label: 'RENDA',   unit: 'R$',      color: '--map-teal',   faint: '--map-teal-faint',   fmtBar: fmtMillion },
+    { key: 'sessoes',    label: 'SESSÃO',  unit: 'sessões', color: '--map-purple', faint: '--map-purple-faint', fmtBar: fmtMillion },
+    { key: 'pmi',        label: 'PMI',     unit: 'R$',      color: '--map-rose',   faint: '--map-rose-faint',   fmtBar: fmtBRL }
+  ];
+
+  // Drill-down estado -> município, por holder (cada linha guarda sua própria UF aberta).
+  var _mapaUfDrillDown = {};
+
+  function ensureUfSalaRows() {
+    var wrap = $('mapa-rows');
+    if (!wrap || $('mapa-uf-holder-' + UF_SALA_METRICS[0].key)) return;
+    UF_SALA_METRICS.forEach(function (m) {
+      wrap.appendChild(el('div', { class: 'map-row' }, [
+        el('div', { class: 'map-section' }, [
+          el('div', { class: 'map-label' }, 'LOCAL DA SALA DE EXIBIÇÃO (UF) · ' + m.label),
+          el('div', { class: 'map-box' }, [
+            el('div', { class: 'map-holder', id: 'mapa-uf-holder-' + m.key }),
+            el('div', { class: 'tooltip', id: 'mapa-uf-tooltip-' + m.key })
+          ])
+        ]),
+        el('div', { class: 'map-section' }, [
+          el('div', { class: 'map-label' }, 'LOCAL DA SALA DE EXIBIÇÃO (UF) · ' + m.label),
+          el('div', { class: 'chart-box', id: 'mapa-uf-bar-' + m.key })
+        ])
+      ]));
+    });
+  }
+
+  // Estados do Brasil, coloridos por m.key — clicar num estado com dado
+  // abre o drill-down de municípios (drawMunicipioSalaMap).
+  function drawUfSalaMap(holderId, tooltipId, rows, m, onDrillChange, onMunicipioRows) {
+    var uf = _mapaUfDrillDown[holderId];
+    if (uf) {
+      drawMunicipioSalaMap(holderId, tooltipId, uf, m, onDrillChange, onMunicipioRows);
+      return;
+    }
+    var holder = $(holderId);
+    if (!holder || !window.d3 || !_brasilGeo) return;
+    var w = holder.clientWidth, h = holder.clientHeight;
+    if (!w || !h) return;
+
+    var accent = cssVar(m.color), accentFaint = cssVar(m.faint);
+    var border = cssVar('--map-border'), empty = cssVar('--map-empty'), legendClr = cssVar('--map-legend');
+
+    holder.innerHTML = '';
+    var svg = d3.select(holder).append('svg').attr('width', w).attr('height', h).attr('viewBox', '0 0 ' + w + ' ' + h);
+    var projection = d3.geoMercator().fitExtent([[14, 14], [w - 14, h - 14]], { type: 'FeatureCollection', features: _brasilGeo });
+    var path = d3.geoPath(projection);
+
+    var byUf = {};
+    rows.forEach(function (r) { byUf[r.uf] = r[m.key] || 0; });
+    var max = d3.max(rows, function (r) { return r[m.key] || 0; }) || 1;
+    var colorScale = d3.scaleSequentialSqrt().domain([0, max]).interpolator(d3.interpolate(accentFaint, accent));
+
+    var tip = $(tooltipId);
+    svg.append('g').selectAll('path').data(_brasilGeo).join('path')
+      .attr('d', path)
+      .attr('fill', function (d) {
+        var sigla = d.properties && d.properties.sigla;
+        var v = byUf[sigla];
+        return v ? colorScale(v) : empty;
+      })
+      .attr('stroke', border).attr('stroke-width', 0.6)
+      .style('cursor', function (d) { var sigla = d.properties && d.properties.sigla; return byUf[sigla] ? 'pointer' : 'default'; })
+      .on('click', function (event, d) {
+        var sigla = d.properties && d.properties.sigla;
+        if (!sigla || !byUf[sigla]) return;
+        _mapaUfDrillDown[holderId] = sigla;
+        onDrillChange();
+      })
+      .on('mousemove', function (event, d) {
+        var sigla = d.properties && d.properties.sigla;
+        var v = byUf[sigla];
+        var p = d3.pointer(event, holder);
+        tip.style.display = 'block';
+        tip.style.left = p[0] + 'px'; tip.style.top = p[1] + 'px'; tip.style.transform = 'translate(14px,-50%)';
+        tip.innerHTML = '<div class="tt-title">' + (UF_NAMES[sigla] || sigla) + '</div>' +
+          '<div class="tt-row"><span>' + m.label + '</span><b>' + m.fmtBar(v || 0) + '</b></div>' +
+          (v ? '<div class="tt-top">clique para ver municípios</div>' : '');
+      })
+      .on('mouseleave', function () { tip.style.display = 'none'; });
+
+    drawChoroplethLegend(svg, w, h, holderId, accent, accentFaint, legendClr, max, m.unit);
+  }
+
+  function drawMunicipioSalaMap(holderId, tooltipId, uf, m, onDrillChange, onMunicipioRows) {
+    var holder = $(holderId);
+    if (!holder || !window.d3) return;
+    var w = holder.clientWidth, h = holder.clientHeight;
+    if (!w || !h) return;
+    holder.innerHTML = '<div class="map-loading">Carregando municípios de ' + (UF_NAMES[uf] || uf) + '…</div>';
+
+    ensureMunicipiosGeo(uf, function (features) {
+      if (_mapaUfDrillDown[holderId] !== uf) return; // saiu/trocou de UF antes do geojson chegar
+      if (!features) { _mapaUfDrillDown[holderId] = null; onDrillChange(); return; }
+      var qs = buildFilmesQueryString();
+      window.dashboardApi.getLatest(
+        'mapa-municipios-' + holderId,
+        '/api/ancine/mapa-municipios?uf=' + encodeURIComponent(uf) + (qs ? '&' + qs : '')
+      ).then(function (data) {
+        if (_mapaUfDrillDown[holderId] !== uf) return;
+        var rows = data || [];
+        renderMunicipioSalaChoropleth(holderId, tooltipId, features, rows, uf, m, onDrillChange);
+        if (onMunicipioRows) onMunicipioRows(rows, uf);
+      }).catch(function () {});
+    });
+  }
+
+  function renderMunicipioSalaChoropleth(holderId, tooltipId, features, rows, uf, m, onDrillChange) {
+    var holder = $(holderId);
+    if (!holder || !window.d3) return;
+    var w = holder.clientWidth, h = holder.clientHeight;
+    if (!w || !h) return;
+    var accent = cssVar(m.color), accentFaint = cssVar(m.faint);
+    var border = cssVar('--map-border'), empty = cssVar('--map-empty'), legendClr = cssVar('--map-legend');
+
+    var byMunicipio = {};
+    rows.forEach(function (r) { byMunicipio[normName(r.municipio)] = { v: r[m.key] || 0, nome: r.municipio }; });
+    var max = d3.max(rows, function (r) { return r[m.key] || 0; }) || 1;
+    var colorScale = d3.scaleSequentialSqrt().domain([0, max]).interpolator(d3.interpolate(accentFaint, accent));
+
+    holder.innerHTML = '';
+    var svg = d3.select(holder).append('svg').attr('width', w).attr('height', h).attr('viewBox', '0 0 ' + w + ' ' + h);
+    var projection = d3.geoMercator().fitExtent([[14, 14], [w - 14, h - 14]], { type: 'FeatureCollection', features: features });
+    var path = d3.geoPath(projection);
+
+    var tip = $(tooltipId);
+    svg.append('g').selectAll('path').data(features).join('path')
+      .attr('d', path)
+      .attr('fill', function (d) {
+        var mm = byMunicipio[normName(d.properties && d.properties.name)];
+        return mm ? colorScale(mm.v) : empty;
+      })
+      .attr('stroke', border).attr('stroke-width', 0.5)
+      .on('mousemove', function (event, d) {
+        var nome = d.properties && d.properties.name;
+        var mm = byMunicipio[normName(nome)];
+        var p = d3.pointer(event, holder);
+        tip.style.display = 'block';
+        tip.style.left = p[0] + 'px'; tip.style.top = p[1] + 'px'; tip.style.transform = 'translate(14px,-50%)';
+        tip.innerHTML = '<div class="tt-title">' + (mm ? mm.nome : nome) + '</div>' +
+          '<div class="tt-row"><span>' + m.label + '</span><b>' + m.fmtBar(mm ? mm.v : 0) + '</b></div>';
+      })
+      .on('mouseleave', function () { tip.style.display = 'none'; });
+
+    drawChoroplethLegend(svg, w, h, holderId, accent, accentFaint, legendClr, max, m.unit);
+
+    var backBtn = el('div', {
+      class: 'map-back-btn',
+      onclick: function () { _mapaUfDrillDown[holderId] = null; onDrillChange(); }
+    }, '← ' + (UF_NAMES[uf] || uf));
+    holder.appendChild(backBtn);
+  }
+
+  function renderUfSalaRow(m) {
+    var holderId = 'mapa-uf-holder-' + m.key;
+    var tooltipId = 'mapa-uf-tooltip-' + m.key;
+    var hbarBoxId = 'mapa-uf-bar-' + m.key;
+
+    function renderHbarEstados() {
+      var box = $(hbarBoxId);
+      if (!box) return;
+      box.innerHTML = '';
+      var rows = state.mapaUfRows || [];
+      var sorted = rows.slice().sort(function (a, b) { return (b[m.key] || 0) - (a[m.key] || 0); });
+      box.appendChild(hbarChart(
+        'TOP UF × ' + m.label,
+        sorted.map(function (r) { return { label: UF_NAMES[r.uf] || r.uf, n: r[m.key] || 0, color: cssVar(m.color), uf: r.uf }; }),
+        m.fmtBar,
+        function (d) { _mapaUfDrillDown[holderId] = d.uf; redraw(); }
+      ));
+    }
+
+    function renderHbarMunicipios(rows, uf) {
+      if (_mapaUfDrillDown[holderId] !== uf) return;
+      var box = $(hbarBoxId);
+      if (!box) return;
+      box.innerHTML = '';
+      var sorted = (rows || []).slice().sort(function (a, b) { return (b[m.key] || 0) - (a[m.key] || 0); });
+      box.appendChild(hbarChart(
+        'MUNICÍPIOS DE ' + (UF_NAMES[uf] || uf).toUpperCase() + ' · ' + m.label,
+        sorted.map(function (r) { return { label: toTitleCase(r.municipio), n: r[m.key] || 0, color: cssVar(m.color) }; }),
+        m.fmtBar
+      ));
+    }
+
+    function redraw() {
+      if (_mapaUfDrillDown[holderId]) {
+        var box = $(hbarBoxId);
+        if (box) box.innerHTML = '<div class="empty-row">Carregando municípios…</div>';
+      } else {
+        renderHbarEstados();
+      }
+      drawUfSalaMap(holderId, tooltipId, state.mapaUfRows || [], m, redraw, renderHbarMunicipios);
+    }
+    redraw();
+  }
+
+  function renderMapaUfPanel() {
+    if (!window.d3 || !state.mapaUfRows || !state.mapaUfRows.length) return;
+    ensureUfSalaRows();
+    ensureBrasilGeo(function () {
+      UF_SALA_METRICS.forEach(renderUfSalaRow);
+    });
   }
 
   /* ---------------- Abas Diretores/Produtores/Requerente (data/ancine/) ---------------- */
@@ -903,7 +1495,10 @@
     return [
       { key: 'nome',                label: label },
       { key: 'qtdTitulos',           label: 'Qtd. Títulos',            right: true },
+      { key: 'publicoPagante',       label: 'Público Pagante',         right: true },
       { key: 'publicoTotal',         label: 'Público Total',           right: true },
+      { key: 'rendaTotal',           label: 'Renda (R$)',              right: true },
+      { key: 'pmi',                  label: 'PMI (R$)',                right: true },
       { key: 'sessoes',              label: 'Sessões',                 right: true },
       { key: 'diasExibicao',         label: 'Dias Exibição',           right: true },
       { key: 'publicoMedioTitulo',   label: 'Média Público/Título',    right: true },
@@ -927,7 +1522,6 @@
     renderPessoaPane(cfg);
     var qs = buildFilmesQueryString(); // mesmos filtros da sidebar
     window.dashboardApi.getLatest('people-' + cfg.tab, cfg.endpoint + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _pessoaReqSeq[cfg.tab]) return; // resposta de uma requisição antiga (superada)
         st.rows = data || [];
@@ -948,23 +1542,31 @@
     if (!pane) return;
     var st = state.pessoaTabs[cfg.tab];
     var columns = pessoaColumns(cfg.label);
+    var colCount = columns.length;
 
     var wrap = pane.querySelector('.table-wrap');
     if (!wrap) {
       pane.innerHTML = '';
+      // Toolbar (Exportar CSV) e paginação ficam FORA de .table-wrap de
+      // propósito — é .table-wrap quem rola na horizontal, e se ficassem
+      // dentro dele sairiam da tela junto com o scroll.
+      pane.appendChild(el('div', { class: 'toolbar-row', id: cfg.tab + '-toolbar' }));
       wrap = el('div', { class: 'table-wrap' }, [
-        el('div', { class: 'thead', id: cfg.tab + '-thead' }),
-        el('div', { id: cfg.tab + '-tbody' }),
-        el('div', { class: 'tpager', id: cfg.tab + '-tpager' })
+        el('table', { class: 'data-table' }, [
+          el('thead', { id: cfg.tab + '-thead' }),
+          el('tbody', { id: cfg.tab + '-tbody' })
+        ])
       ]);
       pane.appendChild(wrap);
+      pane.appendChild(el('div', { class: 'tpager', id: cfg.tab + '-tpager' }));
     }
 
     if (st.loading) {
       $(cfg.tab + '-thead').innerHTML = '';
       $(cfg.tab + '-tpager').innerHTML = '';
+      $(cfg.tab + '-toolbar').innerHTML = '';
       var body0 = $(cfg.tab + '-tbody'); body0.innerHTML = '';
-      body0.appendChild(el('div', { class: 'empty-row' }, 'Carregando…'));
+      body0.appendChild(el('tr', {}, el('td', { class: 'empty-row', colspan: colCount }, 'Carregando…')));
       return;
     }
 
@@ -984,11 +1586,12 @@
     var page = sorted.slice(start, start + PAGE_SIZE);
 
     var head = $(cfg.tab + '-thead'); head.innerHTML = '';
+    var headRow = el('tr');
     columns.forEach(function (c) {
       var active = st.sortKey === c.key;
       var arrow = active ? (st.sortDir === 'asc' ? ' ↑' : ' ↓') : '';
-      head.appendChild(el('div', {
-        class: 'th' + (c.right ? ' right' : '') + (active ? ' active' : ''),
+      headRow.appendChild(el('th', {
+        class: (c.right ? 'right' : '') + (active ? ' active' : ''),
         onclick: function () {
           if (st.sortKey === c.key) st.sortDir = st.sortDir === 'desc' ? 'asc' : 'desc';
           else { st.sortKey = c.key; st.sortDir = c.right ? 'desc' : 'asc'; }
@@ -997,28 +1600,37 @@
         }
       }, c.label + arrow));
     });
+    head.appendChild(headRow);
 
     var body = $(cfg.tab + '-tbody'); body.innerHTML = '';
     if (!page.length) {
-      body.appendChild(el('div', { class: 'empty-row' }, 'Nenhum registro encontrado para os filtros atuais.'));
+      body.appendChild(el('tr', {}, el('td', { class: 'empty-row', colspan: colCount }, 'Nenhum registro encontrado para os filtros atuais.')));
     } else {
       var clickavel = cfg.tab === 'diretores' || cfg.tab === 'produtores' || cfg.tab === 'requerente';
       page.forEach(function (r) {
         var active = clickavel && state.detailPessoa && state.detailPessoa.tab === cfg.tab && state.detailPessoa.nome === r.nome;
-        body.appendChild(el('div', {
-          class: 'trow' + (clickavel ? ' clickable' : '') + (active ? ' trow-active' : ''),
+        body.appendChild(el('tr', {
+          class: (clickavel ? 'clickable' : '') + (active ? ' trow-active' : ''),
           onclick: clickavel ? function () { selectPessoaRelacionada(cfg.tab, r.nome); } : null
         }, [
-          el('div', { class: 'cell b' }, r.nome || '–'),
-          el('div', { class: 'cell mono right' }, fmtInt(r.qtdTitulos)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.publicoTotal)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.sessoes)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.diasExibicao)),
-          el('div', { class: 'cell mono right' }, r.publicoMedioTitulo != null ? fmtInt(Math.round(r.publicoMedioTitulo)) : '–'),
-          el('div', { class: 'cell mono right' }, r.sessoesMediaTitulo != null ? fmtInt(Math.round(r.sessoesMediaTitulo)) : '–')
+          el('td', { class: 'b' }, r.nome || '–'),
+          el('td', { class: 'mono right' }, fmtInt(r.qtdTitulos)),
+          el('td', { class: 'mono right' }, fmtInt(r.publicoPagante)),
+          el('td', { class: 'mono right' }, fmtInt(r.publicoTotal)),
+          el('td', { class: 'mono right' }, fmtBRL(r.rendaTotal)),
+          el('td', { class: 'mono right' }, fmtBRL(r.pmi)),
+          el('td', { class: 'mono right' }, fmtInt(r.sessoes)),
+          el('td', { class: 'mono right' }, fmtInt(r.diasExibicao)),
+          el('td', { class: 'mono right' }, r.publicoMedioTitulo != null ? fmtInt(Math.round(r.publicoMedioTitulo)) : '–'),
+          el('td', { class: 'mono right' }, r.sessoesMediaTitulo != null ? fmtInt(Math.round(r.sessoesMediaTitulo)) : '–')
         ]));
       });
     }
+
+    var toolbar = $(cfg.tab + '-toolbar'); toolbar.innerHTML = '';
+    toolbar.appendChild(exportButton(cfg.tab + '.csv', columns.map(function (c) { return c.label; }), function () {
+      return sorted.map(function (r) { return columns.map(function (c) { return r[c.key]; }); });
+    }));
 
     var pager = $(cfg.tab + '-tpager'); pager.innerHTML = '';
     var from = total ? start + 1 : 0;
@@ -1035,9 +1647,6 @@
       }, '>')
     ]);
     pager.appendChild(nav);
-    pager.appendChild(exportButton(cfg.tab + '.csv', columns.map(function (c) { return c.label; }), function () {
-      return sorted.map(function (r) { return columns.map(function (c) { return r[c.key]; }); });
-    }));
   }
 
   /* ---------------- Aba Filmes (data/ancine/, via /api/ancine/filmes) ---------------- */
@@ -1047,7 +1656,10 @@
     { key: 'tituloOriginal',       label: 'Título Original' },
     { key: 'paisProdutor',         label: 'País Produtor' },
     { key: 'ano1aExibicao',        label: 'Ano 1ª Exibição',        right: true },
+    { key: 'publicoPagante',       label: 'Público Pagante',        right: true },
     { key: 'publico',              label: 'Público',                right: true },
+    { key: 'rendaTotal',           label: 'Renda (R$)',             right: true },
+    { key: 'pmi',                  label: 'PMI (R$)',               right: true },
     { key: 'sessoesRealizadas',    label: 'Sessões Realizadas',     right: true },
     { key: 'diasExibicao',         label: 'Dias Exibição',          right: true },
     { key: 'publicoMedioSessao',   label: 'Público Médio/Sessão',   right: true },
@@ -1066,6 +1678,9 @@
     add('tituloBrasileiro', state.tituloBrasileiro);
     add('tituloOriginal', state.tituloOriginal);
     addAll('paisOrigem', state.paisOrigem);
+    addAll('nacionalidade', state.nacionalidade);
+    addAll('tipoObra', state.tipoObra);
+    addAll('subtipoObra', state.subtipoObra);
     add('registroSala', state.registroSala);
     addAll('grupoExibidor', state.grupoExibidor);
     addAll('municipioSala', state.municipioSala);
@@ -1079,9 +1694,9 @@
     return parts.join('&');
   }
 
-  var URL_ARRAY_FILTERS = ['anos', 'paisOrigem', 'grupoExibidor', 'municipioSala', 'ufSala', 'municipioRequerente', 'ufRequerente'];
+  var URL_ARRAY_FILTERS = ['anos', 'paisOrigem', 'nacionalidade', 'tipoObra', 'subtipoObra', 'grupoExibidor', 'municipioSala', 'ufSala', 'municipioRequerente', 'ufRequerente'];
   var URL_TEXT_FILTERS = ['semanaInicio', 'semanaFim', 'cpbRoe', 'tituloBrasileiro', 'tituloOriginal', 'registroSala', 'nomeDiretor', 'nomeProdutor', 'cnpjRequerente', 'nomeRequerente'];
-  var VALID_TABS = ['bilheteria', 'filmes', 'diretores', 'produtores', 'requerente', 'salaexibicao', 'paises', 'chat'];
+  var VALID_TABS = ['bilheteria', 'ingresso', 'filmes', 'diretores', 'produtores', 'requerente', 'salaexibicao', 'mapa', 'chat'];
 
   function restoreStateFromUrl() {
     var params = new URLSearchParams(window.location.search);
@@ -1120,7 +1735,6 @@
     renderFilmesPane();
     var qs = buildFilmesQueryString();
     window.dashboardApi.getLatest('films', '/api/ancine/filmes' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _filmesReqSeq) return; // resposta de uma requisição antiga (superada)
         state.filmesRows = data || [];
@@ -1139,23 +1753,31 @@
   function renderFilmesPane() {
     var pane = $('pane-filmes');
     if (!pane) return;
+    var colCount = FILMES_COLUMNS.length;
 
     var wrap = pane.querySelector('.table-wrap');
     if (!wrap) {
       pane.innerHTML = '';
+      // Toolbar (Exportar CSV) e paginação ficam FORA de .table-wrap de
+      // propósito — é .table-wrap quem rola na horizontal, e se ficassem
+      // dentro dele sairiam da tela junto com o scroll.
+      pane.appendChild(el('div', { class: 'toolbar-row', id: 'filmes-toolbar' }));
       wrap = el('div', { class: 'table-wrap' }, [
-        el('div', { class: 'thead', id: 'filmes-thead' }),
-        el('div', { id: 'filmes-tbody' }),
-        el('div', { class: 'tpager', id: 'filmes-tpager' })
+        el('table', { class: 'data-table' }, [
+          el('thead', { id: 'filmes-thead' }),
+          el('tbody', { id: 'filmes-tbody' })
+        ])
       ]);
       pane.appendChild(wrap);
+      pane.appendChild(el('div', { class: 'tpager', id: 'filmes-tpager' }));
     }
 
     if (state.filmesLoading) {
       $('filmes-thead').innerHTML = '';
       $('filmes-tpager').innerHTML = '';
+      $('filmes-toolbar').innerHTML = '';
       var body0 = $('filmes-tbody'); body0.innerHTML = '';
-      body0.appendChild(el('div', { class: 'empty-row' }, 'Carregando…'));
+      body0.appendChild(el('tr', {}, el('td', { class: 'empty-row', colspan: colCount }, 'Carregando…')));
       return;
     }
 
@@ -1175,11 +1797,12 @@
     var page = sorted.slice(start, start + PAGE_SIZE);
 
     var head = $('filmes-thead'); head.innerHTML = '';
+    var headRow = el('tr');
     FILMES_COLUMNS.forEach(function (c) {
       var active = state.filmesSortKey === c.key;
       var arrow = active ? (state.filmesSortDir === 'asc' ? ' ↑' : ' ↓') : '';
-      head.appendChild(el('div', {
-        class: 'th' + (c.right ? ' right' : '') + (active ? ' active' : ''),
+      headRow.appendChild(el('th', {
+        class: (c.right ? 'right' : '') + (active ? ' active' : ''),
         onclick: function () {
           if (state.filmesSortKey === c.key) state.filmesSortDir = state.filmesSortDir === 'desc' ? 'asc' : 'desc';
           else { state.filmesSortKey = c.key; state.filmesSortDir = c.right ? 'desc' : 'asc'; }
@@ -1188,31 +1811,40 @@
         }
       }, c.label + arrow));
     });
+    head.appendChild(headRow);
 
     var body = $('filmes-tbody'); body.innerHTML = '';
     if (!page.length) {
-      body.appendChild(el('div', { class: 'empty-row' }, 'Nenhum filme encontrado para os filtros atuais.'));
+      body.appendChild(el('tr', {}, el('td', { class: 'empty-row', colspan: colCount }, 'Nenhum filme encontrado para os filtros atuais.')));
     } else {
       page.forEach(function (r) {
         var active = state.detailCodigo === r.codigo && !state.detailPessoa;
-        body.appendChild(el('div', {
-          class: 'trow clickable' + (active ? ' trow-active' : ''),
+        body.appendChild(el('tr', {
+          class: 'clickable' + (active ? ' trow-active' : ''),
           onclick: function () { selectFilmeDetalhe(r.codigo); }
         }, [
-          el('div', { class: 'cell mono' }, r.codigo),
-          el('div', { class: 'cell b' }, r.tituloBrasil || '–'),
-          el('div', { class: 'cell muted' }, r.tituloOriginal || '–'),
-          el('div', { class: 'cell muted' }, r.paisProdutor || '–'),
-          el('div', { class: 'cell mono right' }, r.ano1aExibicao || '–'),
-          el('div', { class: 'cell mono right' }, fmtInt(r.publico)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.sessoesRealizadas)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.diasExibicao)),
-          el('div', { class: 'cell mono right' }, r.publicoMedioSessao != null ? r.publicoMedioSessao.toFixed(1) : '–'),
-          el('div', { class: 'cell mono right' }, fmtInt(r.maxSalasOcupadas)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.maxComplexosOcupados))
+          el('td', { class: 'mono' }, r.codigo),
+          el('td', { class: 'b' }, r.tituloBrasil || '–'),
+          el('td', { class: 'muted' }, r.tituloOriginal || '–'),
+          el('td', { class: 'muted' }, r.paisProdutor || '–'),
+          el('td', { class: 'mono right' }, r.ano1aExibicao || '–'),
+          el('td', { class: 'mono right' }, fmtInt(r.publicoPagante)),
+          el('td', { class: 'mono right' }, fmtInt(r.publico)),
+          el('td', { class: 'mono right' }, fmtBRL(r.rendaTotal)),
+          el('td', { class: 'mono right' }, fmtBRL(r.pmi)),
+          el('td', { class: 'mono right' }, fmtInt(r.sessoesRealizadas)),
+          el('td', { class: 'mono right' }, fmtInt(r.diasExibicao)),
+          el('td', { class: 'mono right' }, r.publicoMedioSessao != null ? r.publicoMedioSessao.toFixed(1) : '–'),
+          el('td', { class: 'mono right' }, fmtInt(r.maxSalasOcupadas)),
+          el('td', { class: 'mono right' }, fmtInt(r.maxComplexosOcupados))
         ]));
       });
     }
+
+    var toolbar = $('filmes-toolbar'); toolbar.innerHTML = '';
+    toolbar.appendChild(exportButton('filmes.csv', FILMES_COLUMNS.map(function (c) { return c.label; }), function () {
+      return sorted.map(function (r) { return FILMES_COLUMNS.map(function (c) { return r[c.key]; }); });
+    }));
 
     var pager = $('filmes-tpager'); pager.innerHTML = '';
     var from = total ? start + 1 : 0;
@@ -1229,9 +1861,6 @@
       }, '>')
     ]);
     pager.appendChild(nav);
-    pager.appendChild(exportButton('filmes.csv', FILMES_COLUMNS.map(function (c) { return c.label; }), function () {
-      return sorted.map(function (r) { return FILMES_COLUMNS.map(function (c) { return r[c.key]; }); });
-    }));
   }
 
   /* ---------------- Aba Exibidor (data/ancine/, via /api/ancine/salas) ---------------- */
@@ -1240,7 +1869,10 @@
     { key: 'complexo',           label: 'Complexo' },
     { key: 'sala',               label: 'Sala' },
     { key: 'qtdTitulos',         label: 'Qtd. Títulos',          right: true },
+    { key: 'publicoPagante',     label: 'Público Pagante',       right: true },
     { key: 'publicoTotal',       label: 'Público Total',         right: true },
+    { key: 'rendaTotal',         label: 'Renda (R$)',            right: true },
+    { key: 'pmi',                label: 'PMI (R$)',              right: true },
     { key: 'sessoes',            label: 'Sessões',               right: true },
     { key: 'publicoMedioSessao', label: 'Média Público/Sessão',  right: true }
   ];
@@ -1259,7 +1891,6 @@
     renderSalasPane();
     var qs = buildFilmesQueryString();
     window.dashboardApi.getLatest('theaters', '/api/ancine/salas' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _salasReqSeq) return; // resposta de uma requisição antiga (superada)
         state.salasRows = data || [];
@@ -1278,23 +1909,31 @@
   function renderSalasPane() {
     var pane = $('pane-salaexibicao');
     if (!pane) return;
+    var colCount = SALAS_COLUMNS.length;
 
     var wrap = pane.querySelector('.table-wrap');
     if (!wrap) {
       pane.innerHTML = '';
+      // Toolbar (Exportar CSV) e paginação ficam FORA de .table-wrap de
+      // propósito — é .table-wrap quem rola na horizontal, e se ficassem
+      // dentro dele sairiam da tela junto com o scroll.
+      pane.appendChild(el('div', { class: 'toolbar-row', id: 'salas-toolbar' }));
       wrap = el('div', { class: 'table-wrap' }, [
-        el('div', { class: 'thead', id: 'salas-thead' }),
-        el('div', { id: 'salas-tbody' }),
-        el('div', { class: 'tpager', id: 'salas-tpager' })
+        el('table', { class: 'data-table' }, [
+          el('thead', { id: 'salas-thead' }),
+          el('tbody', { id: 'salas-tbody' })
+        ])
       ]);
       pane.appendChild(wrap);
+      pane.appendChild(el('div', { class: 'tpager', id: 'salas-tpager' }));
     }
 
     if (state.salasLoading) {
       $('salas-thead').innerHTML = '';
       $('salas-tpager').innerHTML = '';
+      $('salas-toolbar').innerHTML = '';
       var body0 = $('salas-tbody'); body0.innerHTML = '';
-      body0.appendChild(el('div', { class: 'empty-row' }, 'Carregando…'));
+      body0.appendChild(el('tr', {}, el('td', { class: 'empty-row', colspan: colCount }, 'Carregando…')));
       return;
     }
 
@@ -1314,11 +1953,12 @@
     var page = sorted.slice(start, start + PAGE_SIZE);
 
     var head = $('salas-thead'); head.innerHTML = '';
+    var headRow = el('tr');
     SALAS_COLUMNS.forEach(function (c) {
       var active = state.salasSortKey === c.key;
       var arrow = active ? (state.salasSortDir === 'asc' ? ' ↑' : ' ↓') : '';
-      head.appendChild(el('div', {
-        class: 'th' + (c.right ? ' right' : '') + (active ? ' active' : ''),
+      headRow.appendChild(el('th', {
+        class: (c.right ? 'right' : '') + (active ? ' active' : ''),
         onclick: function () {
           if (state.salasSortKey === c.key) state.salasSortDir = state.salasSortDir === 'desc' ? 'asc' : 'desc';
           else { state.salasSortKey = c.key; state.salasSortDir = c.right ? 'desc' : 'asc'; }
@@ -1327,27 +1967,36 @@
         }
       }, c.label + arrow));
     });
+    head.appendChild(headRow);
 
     var body = $('salas-tbody'); body.innerHTML = '';
     if (!page.length) {
-      body.appendChild(el('div', { class: 'empty-row' }, 'Nenhuma sala encontrada para os filtros atuais.'));
+      body.appendChild(el('tr', {}, el('td', { class: 'empty-row', colspan: colCount }, 'Nenhuma sala encontrada para os filtros atuais.')));
     } else {
       page.forEach(function (r) {
         var active = state.detailSalaRegistro === r.registroSala;
-        body.appendChild(el('div', {
-          class: 'trow clickable' + (active ? ' trow-active' : ''),
+        body.appendChild(el('tr', {
+          class: 'clickable' + (active ? ' trow-active' : ''),
           onclick: function () { selectSalaDetalhe(r.registroSala); }
         }, [
-          el('div', { class: 'cell b' }, r.exibidor || '–'),
-          el('div', { class: 'cell muted' }, (r.complexo || '–') + (r.registroComplexo ? ' (' + r.registroComplexo + ')' : '')),
-          el('div', { class: 'cell muted' }, (r.sala || '–') + ' (' + r.registroSala + ')'),
-          el('div', { class: 'cell mono right' }, fmtInt(r.qtdTitulos)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.publicoTotal)),
-          el('div', { class: 'cell mono right' }, fmtInt(r.sessoes)),
-          el('div', { class: 'cell mono right' }, r.publicoMedioSessao != null ? r.publicoMedioSessao.toFixed(1) : '–')
+          el('td', { class: 'b' }, r.exibidor || '–'),
+          el('td', { class: 'muted' }, (r.complexo || '–') + (r.registroComplexo ? ' (' + r.registroComplexo + ')' : '')),
+          el('td', { class: 'muted' }, (r.sala || '–') + ' (' + r.registroSala + ')'),
+          el('td', { class: 'mono right' }, fmtInt(r.qtdTitulos)),
+          el('td', { class: 'mono right' }, fmtInt(r.publicoPagante)),
+          el('td', { class: 'mono right' }, fmtInt(r.publicoTotal)),
+          el('td', { class: 'mono right' }, fmtBRL(r.rendaTotal)),
+          el('td', { class: 'mono right' }, fmtBRL(r.pmi)),
+          el('td', { class: 'mono right' }, fmtInt(r.sessoes)),
+          el('td', { class: 'mono right' }, r.publicoMedioSessao != null ? r.publicoMedioSessao.toFixed(1) : '–')
         ]));
       });
     }
+
+    var toolbar = $('salas-toolbar'); toolbar.innerHTML = '';
+    toolbar.appendChild(exportButton('salas.csv', SALAS_COLUMNS.map(function (c) { return c.label; }), function () {
+      return sorted.map(function (r) { return SALAS_COLUMNS.map(function (c) { return r[c.key]; }); });
+    }));
 
     var pager = $('salas-tpager'); pager.innerHTML = '';
     var from = total ? start + 1 : 0;
@@ -1364,9 +2013,6 @@
       }, '>')
     ]);
     pager.appendChild(nav);
-    pager.appendChild(exportButton('salas.csv', SALAS_COLUMNS.map(function (c) { return c.label; }), function () {
-      return sorted.map(function (r) { return SALAS_COLUMNS.map(function (c) { return r[c.key]; }); });
-    }));
   }
 
   /* ---------------- Detalhes do Filme (Filme/Diretor/Produtor) ---------------- */
@@ -1407,7 +2053,6 @@
     var seq = ++_detailRelatedReqSeq;
     var qs = buildRelatedFilmsQueryString(tab, nome);
     window.dashboardApi.getLatest('related-films', '/api/ancine/filmes' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _detailRelatedReqSeq) return; // resposta de uma requisição antiga (superada)
         state.detailRelatedFilms = data || [];
@@ -1437,7 +2082,6 @@
 
     var seq = ++_detailReqSeq;
     window.dashboardApi.getLatest('film-detail', '/api/ancine/filme-detalhe/' + encodeURIComponent(codigo))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _detailReqSeq) return; // resposta de uma requisição antiga (superada)
         state.detailFilme = data;
@@ -1470,7 +2114,6 @@
 
     var seq = ++_detailSalaReqSeq;
     window.dashboardApi.getLatest('theater-detail', '/api/ancine/sala-detalhe/' + encodeURIComponent(registroSala))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _detailSalaReqSeq) return; // resposta de uma requisição antiga (superada)
         state.detailSala = data;
@@ -2041,7 +2684,7 @@
     var periodoBody = el('div', { class: 'group-body' });
     root.appendChild(groupHeader('periodo', 'PERÍODO'));
     root.appendChild(periodoBody);
-    addFilter(periodoBody, 'anos', 'ANO', function () { return PERIODO_OPTIONS.anos; }, true);
+    addFilter(periodoBody, 'anos', 'ANO (CINEMATOGRÁFICO)', function () { return PERIODO_OPTIONS.anos; }, true);
     addRange(periodoBody, 'semanaInicio', 'semanaFim', 'SEMANA CINEMATOGRÁFICA', 1, 53);
 
     // OBRA group
@@ -2052,6 +2695,9 @@
     addSearchAutocomplete(obraBody, 'tituloBrasileiro', 'TÍTULO BRASILEIRO', 'Buscar por título brasileiro...', '/api/ancine/titulo-brasil-sugestoes');
     addSearch(obraBody, 'tituloOriginal', 'TÍTULO ORIGINAL', 'Buscar por título original...');
     addFilter(obraBody, 'paisOrigem', 'PAÍS DE ORIGEM', function () { return OBRA_OPTIONS.paisOrigem; });
+    addFilter(obraBody, 'nacionalidade', 'NACIONALIDADE', function () { return NACIONALIDADE_OPTIONS; });
+    addFilter(obraBody, 'tipoObra', 'TIPO OBRA', function () { return OBRA_OPTIONS.tipoObra; });
+    addFilter(obraBody, 'subtipoObra', 'SUBTIPO OBRA', function () { return OBRA_OPTIONS.subtipoObra; });
 
     // DIRETOR group
     var diretorBody = el('div', { class: 'group-body collapsed' });
@@ -2129,7 +2775,7 @@
       var all = allFn();
       // options
       select.innerHTML = '';
-      select.appendChild(new Option(sel.length ? 'Add…' : 'Selecione...', ''));
+      select.appendChild(new Option(sel.length ? 'Adicione...' : 'Selecione...', ''));
       all.forEach(function (x) { if (sel.indexOf(numeric ? x : x) < 0) select.appendChild(new Option(String(x), String(x))); });
       select.value = '';
       // chips
@@ -2241,7 +2887,6 @@
     var seq = ++_periodoExibidoReqSeq;
     var qs = buildFilmesQueryString();
     window.dashboardApi.getLatest('display-period', '/api/ancine/periodo-exibido' + (qs ? '?' + qs : ''))
-      .then(function (r) { return r.json(); })
       .then(function (data) {
         if (seq !== _periodoExibidoReqSeq) return; // resposta de uma requisição antiga (superada)
         var el = $('periodo-subtitle');
@@ -2267,7 +2912,7 @@
 
     // group badges
     setBadge('periodo',     cnt(['anos']) + (state.semanaInicio ? 1 : 0) + (state.semanaFim ? 1 : 0));
-    setBadge('obra',        (state.cpbRoe ? 1 : 0) + (state.tituloBrasileiro ? 1 : 0) + (state.tituloOriginal ? 1 : 0) + cnt(['paisOrigem']));
+    setBadge('obra',        (state.cpbRoe ? 1 : 0) + (state.tituloBrasileiro ? 1 : 0) + (state.tituloOriginal ? 1 : 0) + cnt(['paisOrigem', 'nacionalidade', 'tipoObra', 'subtipoObra']));
     setBadge('salaexibicao', (state.registroSala ? 1 : 0) + cnt(['grupoExibidor','municipioSala','ufSala']));
     setBadge('diretor',     state.nomeDiretor ? 1 : 0);
     setBadge('produtor',    state.nomeProdutor ? 1 : 0);
@@ -2288,10 +2933,10 @@
     // do que já está carregado para aquela aba (loadedQs); troca de aba sem
     // mudar filtro não deve gerar requisição nova.
     var activeQs = buildFilmesQueryString();
-    if (state.tab === 'bilheteria' && state.bilheteriaLoadedQs !== activeQs) scheduleLoadBilheteria();
+    if ((state.tab === 'bilheteria' || state.tab === 'ingresso') && state.bilheteriaLoadedQs !== activeQs) scheduleLoadBilheteria();
     if (state.tab === 'filmes' && state.filmesLoadedQs !== activeQs) scheduleLoadFilmes();
     if (state.tab === 'salaexibicao' && state.salasLoadedQs !== activeQs) scheduleLoadSalas();
-    if (state.tab === 'paises' && state.paisesLoadedQs !== activeQs) scheduleLoadPaises();
+    if (state.tab === 'mapa' && state.mapaLoadedQs !== activeQs) scheduleLoadMapa();
     if (state.tab === 'chat') renderChatResultPane();
     PESSOA_TABS.forEach(function (cfg) {
       var st = state.pessoaTabs[cfg.tab];
@@ -2407,11 +3052,16 @@
   }
 
   /* ---------------- Charts ---------------- */
-  function hbarChart(title, arr, fmtVal) {
+  // onRowClick(d) opcional — quando presente, cada linha vira clicável (usado
+  // pelo drill-down UF -> município do mapa do Brasil).
+  function hbarChart(title, arr, fmtVal, onRowClick) {
     var max = Math.max.apply(null, [1].concat(arr.map(function (d) { return d.n; })));
     var card = chartCard(title);
     arr.forEach(function (d) {
-      card.appendChild(el('div', { class: 'hbar-row' }, [
+      card.appendChild(el('div', {
+        class: 'hbar-row' + (onRowClick ? ' clickable' : ''),
+        onclick: onRowClick ? function () { onRowClick(d); } : null
+      }, [
         el('div', { class: 'hbar-label' }, d.label),
         el('div', { class: 'hbar-track' }, el('div', { class: 'hbar-fill', style: 'width:' + (d.n ? Math.max(6, d.n / max * 100) : 0) + '%;' + (d.color ? 'background:' + d.color : '') })),
         el('div', { class: 'hbar-val' }, fmtVal ? fmtVal(d.n) : d.n)
@@ -2815,7 +3465,6 @@
     if (!_world && !_worldLoading) {
       _worldLoading = true;
       window.dashboardApi.getJson('/static/vendor/countries-110m.json')
-        .then(function (r) { return r.json(); })
         .then(function (topo) {
           _world = window.topojson.feature(topo, topo.objects.countries).features;
           drawAllMaps();
@@ -2937,10 +3586,11 @@
       b.setAttribute('tabindex', active ? '0' : '-1');
     });
     $('pane-bilheteria').classList.toggle('active', tab === 'bilheteria');
+    $('pane-ingresso').classList.toggle('active', tab === 'ingresso');
     $('pane-filmes').classList.toggle('active', tab === 'filmes');
     $('pane-diretores').classList.toggle('active', tab === 'diretores');
     $('pane-produtores').classList.toggle('active', tab === 'produtores');
-    $('pane-paises').classList.toggle('active', tab === 'paises');
+    $('pane-mapa').classList.toggle('active', tab === 'mapa');
     $('pane-salaexibicao').classList.toggle('active', tab === 'salaexibicao');
     $('pane-requerente').classList.toggle('active', tab === 'requerente');
     $('pane-chat').classList.toggle('active', tab === 'chat');
@@ -3027,7 +3677,7 @@
       aiChatBtn.addEventListener('click', function () { setTab(state.tab === 'chat' ? 'bilheteria' : 'chat'); });
     }
     $('clear-btn').addEventListener('click', function () {
-      ['anos','paisOrigem','grupoExibidor','municipioSala','ufSala','municipioRequerente','ufRequerente'].forEach(function (k) { state[k] = []; });
+      ['anos','paisOrigem','nacionalidade','tipoObra','subtipoObra','grupoExibidor','municipioSala','ufSala','municipioRequerente','ufRequerente'].forEach(function (k) { state[k] = []; });
       ['semanaInicio','semanaFim','cpbRoe','tituloBrasileiro','tituloOriginal','registroSala','nomeDiretor','nomeProdutor','cnpjRequerente','nomeRequerente'].forEach(function (k) {
         state[k] = '';
         var inp = $('search-' + k); if (inp) inp.value = '';

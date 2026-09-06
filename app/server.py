@@ -142,7 +142,7 @@ def _ancine_filmes_where(f: dict) -> tuple[str, list]:
     params: list = []
 
     if f["anos"]:
-        cl, p = _in_clause("ano_cine(b.DATA_EXIBICAO)", f["anos"]); parts.append(cl); params += p
+        cl, p = _in_clause("b.ANO_CINEMATOGRAFICO", f["anos"]); parts.append(cl); params += p
     if f["semanaInicio"] is not None:
         parts.append("semana_cine(b.DATA_EXIBICAO) >= ?"); params.append(f["semanaInicio"])
     if f["semanaFim"] is not None:
@@ -159,6 +159,16 @@ def _ancine_filmes_where(f: dict) -> tuple[str, list]:
     if f["paisOrigem"]:
         cl, p = _in_clause("PAIS_ORIGEM", f["paisOrigem"])
         parts.append(f"b.CPB_ROE IN (SELECT CODIGO FROM obra_pais WHERE {cl})"); params += p
+    if f["nacionalidade"]:
+        # Nacionalidade: CPB = obra brasileira, ROE = obra estrangeira.
+        tipos = ["CPB" if v == "Brasileira" else "ROE" for v in f["nacionalidade"]]
+        cl, p = _in_clause("tipo_registro(b.CPB_ROE)", tipos); parts.append(cl); params += p
+    if f["tipoObra"]:
+        cl, p = _in_clause("TIPO_OBRA", f["tipoObra"])
+        parts.append(f"b.CPB_ROE IN (SELECT CODIGO FROM obra WHERE {cl})"); params += p
+    if f["subtipoObra"]:
+        cl, p = _in_clause("SUBTIPO_OBRA", f["subtipoObra"])
+        parts.append(f"b.CPB_ROE IN (SELECT CODIGO FROM obra WHERE {cl})"); params += p
     if f["registroSala"]:
         parts.append("(CAST(b.REGISTRO_SALA AS VARCHAR) ILIKE ? OR CAST(b.REGISTRO_COMPLEXO AS VARCHAR) ILIKE ?)")
         params.append(f"%{f['registroSala']}%"); params.append(f"%{f['registroSala']}%")
@@ -381,7 +391,7 @@ def _load_periodo_options() -> dict:
     con = connect_ancine()
     try:
         anos = con.execute(
-            "SELECT DISTINCT ano_cine(DATA_EXIBICAO) AS ano FROM bilheteria ORDER BY ano"
+            "SELECT DISTINCT ANO_CINEMATOGRAFICO AS ano FROM bilheteria WHERE ANO_CINEMATOGRAFICO IS NOT NULL ORDER BY ano"
         ).fetchall()
         semanas = con.execute(
             "SELECT DISTINCT semana_cine(DATA_EXIBICAO) AS sem FROM bilheteria ORDER BY sem"
@@ -402,20 +412,38 @@ def _load_periodo_options() -> dict:
         con.close()
 
 
-_OBRA_OPTIONS: dict = {"paisOrigem": []}
+_OBRA_OPTIONS: dict = {"paisOrigem": [], "tipoObra": [], "subtipoObra": []}
 
 
 def _load_obra_options() -> dict:
-    """País de origem distintos (CPB + ROE) em data/ancine/, para o filtro Obra."""
+    """País de origem, tipo e subtipo de obra distintos (CPB + ROE) em
+    data/ancine/, para o filtro Filme (Obra). Tipo/subtipo só consideram
+    obras com pelo menos uma sessão em `bilheteria` — o cadastro CPB/ROE tem
+    obras registradas que nunca chegaram a ser exibidas."""
     con = connect_ancine()
     try:
-        rows = con.execute(
+        pais_rows = con.execute(
             "SELECT DISTINCT PAIS_ORIGEM FROM obra_pais WHERE PAIS_ORIGEM IS NOT NULL ORDER BY 1"
         ).fetchall()
-        return {"paisOrigem": [r[0] for r in rows]}
+        con.execute("CREATE OR REPLACE TEMP VIEW _codigos_com_bilheteria AS SELECT DISTINCT CPB_ROE AS CODIGO FROM bilheteria")
+        tipo_rows = con.execute("""
+            SELECT DISTINCT TIPO_OBRA FROM obra
+            WHERE TIPO_OBRA IS NOT NULL AND CODIGO IN (SELECT CODIGO FROM _codigos_com_bilheteria)
+            ORDER BY 1
+        """).fetchall()
+        subtipo_rows = con.execute("""
+            SELECT DISTINCT SUBTIPO_OBRA FROM obra
+            WHERE SUBTIPO_OBRA IS NOT NULL AND CODIGO IN (SELECT CODIGO FROM _codigos_com_bilheteria)
+            ORDER BY 1
+        """).fetchall()
+        return {
+            "paisOrigem": [r[0] for r in pais_rows],
+            "tipoObra": [r[0] for r in tipo_rows],
+            "subtipoObra": [r[0] for r in subtipo_rows],
+        }
     except duckdb.CatalogException:
-        # data/ancine/cpb_pais.parquet ou roe_pais.parquet ainda não existem
-        return {"paisOrigem": []}
+        # data/ancine/ ainda não está completo neste ambiente
+        return {"paisOrigem": [], "tipoObra": [], "subtipoObra": []}
     finally:
         con.close()
 
@@ -715,7 +743,7 @@ _FILMES_QUERY_SQL = """
     WITH sess AS (
         SELECT
             b.CPB_ROE, b.DATA_EXIBICAO, b.REGISTRO_SALA, b.REGISTRO_COMPLEXO,
-            b.PUBLICO, b.TITULO_ORIGINAL, b.TITULO_BRASIL
+            b.PUBLICO, b.PUBLICO_PAGANTE, b.RENDA_TOTAL, b.TITULO_ORIGINAL, b.TITULO_BRASIL
         FROM bilheteria b
         WHERE {where_sql}
     ),
@@ -730,6 +758,8 @@ _FILMES_QUERY_SQL = """
             COUNT(DISTINCT REGISTRO_COMPLEXO) AS complexos_dia,
             COUNT(*)                          AS sessoes_dia,
             SUM(PUBLICO)                      AS publico_dia,
+            SUM(PUBLICO_PAGANTE)              AS publico_pagante_dia,
+            SUM(RENDA_TOTAL)                  AS renda_dia,
             ANY_VALUE(TITULO_ORIGINAL)        AS titulo_original,
             ANY_VALUE(TITULO_BRASIL)          AS titulo_brasil_raw
         FROM sess
@@ -742,6 +772,8 @@ _FILMES_QUERY_SQL = """
             ANY_VALUE(titulo_brasil_raw) AS titulo_brasil_raw,
             MIN(DATA_EXIBICAO)           AS primeira_data,
             SUM(publico_dia)             AS publico,
+            SUM(publico_pagante_dia)     AS publico_pagante,
+            SUM(renda_dia)               AS renda_total,
             SUM(sessoes_dia)             AS sessoes,
             COUNT(*)                     AS dias_exibicao,
             MAX(salas_dia)               AS max_salas,
@@ -751,7 +783,8 @@ _FILMES_QUERY_SQL = """
     )
     SELECT
         a.codigo, a.titulo_original, a.titulo_brasil_raw, a.primeira_data,
-        a.publico, a.sessoes, a.dias_exibicao, a.max_salas, a.max_complexos,
+        a.publico, a.publico_pagante, a.renda_total,
+        a.sessoes, a.dias_exibicao, a.max_salas, a.max_complexos,
         pp.paises AS pais_produtor
     FROM agg a
     LEFT JOIN (
@@ -775,7 +808,8 @@ def _query_filmes_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, param
         con, _FILMES_QUERY_SQL.format(where_sql=where_sql), params
     ).fetchall()
     out = []
-    for codigo, titulo_original, titulo_brasil_raw, primeira_data, publico, sessoes, dias_exibicao, max_salas, max_complexos, pais_produtor in rows:
+    for (codigo, titulo_original, titulo_brasil_raw, primeira_data, publico, publico_pagante,
+         renda_total, sessoes, dias_exibicao, max_salas, max_complexos, pais_produtor) in rows:
         out.append({
             "codigo": codigo,
             "tipoRegistro": classify_registration(codigo),
@@ -783,7 +817,13 @@ def _query_filmes_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, param
             "tituloOriginal": titulo_original,
             "paisProdutor": pais_produtor,
             "ano1aExibicao": cinema_year(primeira_data),
+            "publicoPagante": publico_pagante,
             "publico": publico,
+            "rendaTotal": renda_total,
+            # PMI (Preço Médio de Ingresso) agregado = renda / público pagante,
+            # não a média simples do PMI por sessão — pondera pelo público de
+            # cada sessão em vez de dar o mesmo peso a sessões pequenas e cheias.
+            "pmi": round(renda_total / publico_pagante, 2) if publico_pagante else None,
             "sessoesRealizadas": sessoes,
             "diasExibicao": dias_exibicao,
             "publicoMedioSessao": round(publico / sessoes, 1) if sessoes else None,
@@ -802,6 +842,7 @@ def _query_filmes(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) 
 
 _FILMES_FILTER_DEFAULTS = dict(
     anos=[], semanaInicio=None, semanaFim=None, cpbRoe="", tituloBrasileiro="", tituloOriginal="", paisOrigem=[],
+    nacionalidade=[], tipoObra=[], subtipoObra=[],
     registroSala="", grupoExibidor=[], municipioSala=[], ufSala=[],
     nomeDiretor="", nomeProdutor="", cnpjRequerente="", nomeRequerente="",
     municipioRequerente=[], ufRequerente=[],
@@ -834,6 +875,9 @@ def api_ancine_filmes(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -850,6 +894,7 @@ def api_ancine_filmes(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -878,6 +923,9 @@ def api_ancine_periodo_exibido(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -894,6 +942,7 @@ def api_ancine_periodo_exibido(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -915,29 +964,124 @@ def api_ancine_periodo_exibido(
         con.close()
 
 
+_BILHETERIA_POR_TIPO_DEFAULTS = {
+    "publico": 0, "publicoPagante": 0, "rendaTotal": 0, "pmi": None,
+    "sessoes": 0, "titulosDistintos": 0,
+}
+_TICKET_TYPES = ("inteira", "meia", "promocional", "cortesia")
+_BILHETERIA_POR_TICKET_DEFAULTS = {"publico": 0, "rendaTotal": 0, "pmi": None}
+_BILHETERIA_RESUMO_DEFAULTS = {
+    "publico": 0, "publicoPagante": 0, "rendaTotal": 0, "pmi": None,
+    "diasExibicao": 0, "sessoes": 0, "titulosDistintos": 0, "salasDistintas": 0,
+    "porTipo": {"CPB": dict(_BILHETERIA_POR_TIPO_DEFAULTS), "ROE": dict(_BILHETERIA_POR_TIPO_DEFAULTS)},
+    "porTipoIngresso": {t: dict(_BILHETERIA_POR_TICKET_DEFAULTS) for t in _TICKET_TYPES},
+}
+
+
 def _query_bilheteria_resumo_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> dict:
     try:
-        row = execute_with_timeout(con, f"""
+        # Agrupado por tipo (CPB/ROE) — dá tanto os totais gerais (soma dos
+        # dois) quanto o detalhamento Brasileiro/Estrangeiro exibido embaixo
+        # de cada indicador. Também traz, na mesma passada, as 4 colunas de
+        # tipo de ingresso (inteira/meia/promocional/cortesia) — ortogonais
+        # a CPB/ROE, por isso são somadas através dos grupos, não por grupo.
+        # DIAS_EXIBICAO/SALAS_DISTINTAS ficam de fora de ambos os
+        # detalhamentos porque não são decomponíveis: a mesma sala/dia pode
+        # ter sessões dos dois lados — somar os grupos infla o total.
+        rows = execute_with_timeout(con, f"""
             SELECT
+                tipo_registro(b.CPB_ROE)          AS tipo,
                 SUM(b.PUBLICO)                    AS publico,
-                COUNT(DISTINCT b.DATA_EXIBICAO)    AS dias_exibicao,
+                SUM(b.PUBLICO_PAGANTE)            AS publico_pagante,
+                SUM(b.RENDA_TOTAL)                AS renda_total,
                 COUNT(*)                          AS sessoes,
                 COUNT(DISTINCT b.CPB_ROE)          AS titulos_distintos,
-                COUNT(DISTINCT b.REGISTRO_SALA)    AS salas_distintas
+                SUM(b.PUBLICO_INTEIRA)            AS publico_inteira,
+                SUM(b.PUBLICO_MEIA)               AS publico_meia,
+                SUM(b.PUBLICO_PROMOCIONAL)        AS publico_promocional,
+                SUM(b.PUBLICO_CORTESIA)           AS publico_cortesia,
+                SUM(b.RENDA_INTEIRA)              AS renda_inteira,
+                SUM(b.RENDA_MEIA)                 AS renda_meia,
+                SUM(b.RENDA_PROMOCIONAL)          AS renda_promocional,
+                SUM(b.RENDA_CORTESIA)             AS renda_cortesia
+            FROM bilheteria b
+            WHERE {where_sql}
+            GROUP BY 1
+        """, params).fetchall()
+        gerais = execute_with_timeout(con, f"""
+            SELECT COUNT(DISTINCT b.DATA_EXIBICAO), COUNT(DISTINCT b.REGISTRO_SALA)
             FROM bilheteria b
             WHERE {where_sql}
         """, params).fetchone()
-        publico, dias_exibicao, sessoes, titulos_distintos, salas_distintas = row
-        return {
-            "publico": publico or 0,
-            "diasExibicao": dias_exibicao or 0,
-            "sessoes": sessoes or 0,
-            "titulosDistintos": titulos_distintos or 0,
-            "salasDistintas": salas_distintas or 0,
-        }
     except duckdb.CatalogException:
         # data/ancine/ingresso_hive ainda não existe neste ambiente
-        return {"publico": 0, "diasExibicao": 0, "sessoes": 0, "titulosDistintos": 0, "salasDistintas": 0}
+        return dict(_BILHETERIA_RESUMO_DEFAULTS)
+
+    por_tipo = {"CPB": dict(_BILHETERIA_POR_TIPO_DEFAULTS), "ROE": dict(_BILHETERIA_POR_TIPO_DEFAULTS)}
+    ticket_publico = dict.fromkeys(_TICKET_TYPES, 0)
+    ticket_renda = dict.fromkeys(_TICKET_TYPES, 0)
+    publico = publico_pagante = renda_total = sessoes = titulos_distintos = 0
+    for (tipo, t_publico, t_publico_pagante, t_renda, t_sessoes, t_titulos,
+         t_pub_inteira, t_pub_meia, t_pub_promocional, t_pub_cortesia,
+         t_renda_inteira, t_renda_meia, t_renda_promocional, t_renda_cortesia) in rows:
+        t_publico = t_publico or 0
+        t_publico_pagante = t_publico_pagante or 0
+        t_renda = t_renda or 0
+        t_sessoes = t_sessoes or 0
+        t_titulos = t_titulos or 0
+        if tipo in por_tipo:
+            por_tipo[tipo] = {
+                "publico": t_publico,
+                "publicoPagante": t_publico_pagante,
+                "rendaTotal": t_renda,
+                "pmi": round(t_renda / t_publico_pagante, 2) if t_publico_pagante else None,
+                "sessoes": t_sessoes,
+                "titulosDistintos": t_titulos,
+            }
+        publico += t_publico
+        publico_pagante += t_publico_pagante
+        renda_total += t_renda
+        sessoes += t_sessoes
+        titulos_distintos += t_titulos
+
+        ticket_publico["inteira"] += t_pub_inteira or 0
+        ticket_publico["meia"] += t_pub_meia or 0
+        ticket_publico["promocional"] += t_pub_promocional or 0
+        ticket_publico["cortesia"] += t_pub_cortesia or 0
+        ticket_renda["inteira"] += t_renda_inteira or 0
+        ticket_renda["meia"] += t_renda_meia or 0
+        ticket_renda["promocional"] += t_renda_promocional or 0
+        ticket_renda["cortesia"] += t_renda_cortesia or 0
+
+    # Cortesia é entrada gratuita por definição — qualquer valor não-zero na
+    # soma (a base tem uns poucos centavos de ruído/estorno em ~36M linhas)
+    # é artefato de dado, não renda real. Força para 0.
+    ticket_renda["cortesia"] = 0.0
+
+    por_tipo_ingresso = {
+        t: {
+            "publico": ticket_publico[t],
+            "rendaTotal": ticket_renda[t],
+            "pmi": round(ticket_renda[t] / ticket_publico[t], 2) if ticket_publico[t] else None,
+        }
+        for t in _TICKET_TYPES
+    }
+
+    dias_exibicao, salas_distintas = gerais if gerais else (0, 0)
+    return {
+        "publico": publico,
+        "publicoPagante": publico_pagante,
+        "rendaTotal": renda_total,
+        # PMI (Preço Médio de Ingresso) agregado = renda / público pagante,
+        # ponderado pelo público de cada sessão (mesma lógica da aba Filmes).
+        "pmi": round(renda_total / publico_pagante, 2) if publico_pagante else None,
+        "diasExibicao": dias_exibicao or 0,
+        "sessoes": sessoes,
+        "titulosDistintos": titulos_distintos,
+        "salasDistintas": salas_distintas or 0,
+        "porTipo": por_tipo,
+        "porTipoIngresso": por_tipo_ingresso,
+    }
 
 
 def _query_bilheteria_resumo(con, where_sql: str, params: list) -> dict:
@@ -947,7 +1091,7 @@ def _query_bilheteria_resumo(con, where_sql: str, params: list) -> dict:
     )
 
 
-_BILHETERIA_RESUMO_CACHE: dict = {"publico": 0, "diasExibicao": 0, "sessoes": 0, "titulosDistintos": 0, "salasDistintas": 0}
+_BILHETERIA_RESUMO_CACHE: dict = dict(_BILHETERIA_RESUMO_DEFAULTS)
 
 
 @app.get("/api/ancine/bilheteria-resumo")
@@ -959,6 +1103,9 @@ def api_ancine_bilheteria_resumo(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -977,6 +1124,7 @@ def api_ancine_bilheteria_resumo(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1002,7 +1150,11 @@ def _query_bilheteria_grafico_uncached(con: duckdb.DuckDBPyConnection, where_sql
         # muito mais rápido (ver _ano_cine_py).
         rows = execute_with_timeout(con, f"""
             SELECT b.DATA_EXIBICAO AS data, tipo_registro(b.CPB_ROE) AS tipo,
-                   SUM(b.PUBLICO) AS publico, COUNT(*) AS sessoes
+                   SUM(b.PUBLICO) AS publico, SUM(b.RENDA_TOTAL) AS renda, COUNT(*) AS sessoes,
+                   SUM(b.PUBLICO_INTEIRA) AS publico_inteira, SUM(b.PUBLICO_MEIA) AS publico_meia,
+                   SUM(b.PUBLICO_PROMOCIONAL) AS publico_promocional, SUM(b.PUBLICO_CORTESIA) AS publico_cortesia,
+                   SUM(b.RENDA_INTEIRA) AS renda_inteira, SUM(b.RENDA_MEIA) AS renda_meia,
+                   SUM(b.RENDA_PROMOCIONAL) AS renda_promocional, SUM(b.RENDA_CORTESIA) AS renda_cortesia
             FROM bilheteria b
             WHERE {where_sql}
             GROUP BY 1, 2
@@ -1012,15 +1164,33 @@ def _query_bilheteria_grafico_uncached(con: duckdb.DuckDBPyConnection, where_sql
         return {"porAno": []}
 
     por_ano: dict[int, dict] = {}
-    for data, tipo, publico, sessoes in rows:
+    for (data, tipo, publico, renda, sessoes, pub_inteira, pub_meia, pub_promocional, pub_cortesia,
+         renda_inteira, renda_meia, renda_promocional, renda_cortesia) in rows:
         ano = cinema_year(data)
-        d = por_ano.setdefault(ano, {"ano": ano, "publicoCpb": 0, "publicoRoe": 0, "sessoesCpb": 0, "sessoesRoe": 0})
+        d = por_ano.setdefault(ano, {
+            "ano": ano, "publicoCpb": 0, "publicoRoe": 0,
+            "rendaCpb": 0, "rendaRoe": 0, "sessoesCpb": 0, "sessoesRoe": 0,
+            "publicoInteira": 0, "publicoMeia": 0, "publicoPromocional": 0, "publicoCortesia": 0,
+            "rendaInteira": 0, "rendaMeia": 0, "rendaPromocional": 0, "rendaCortesia": 0,
+        })
         if tipo == "CPB":
             d["publicoCpb"] += publico or 0
+            d["rendaCpb"] += renda or 0
             d["sessoesCpb"] += sessoes or 0
         elif tipo == "ROE":
             d["publicoRoe"] += publico or 0
+            d["rendaRoe"] += renda or 0
             d["sessoesRoe"] += sessoes or 0
+
+        # Tipo de ingresso é ortogonal a CPB/ROE — soma através dos dois grupos.
+        d["publicoInteira"] += pub_inteira or 0
+        d["publicoMeia"] += pub_meia or 0
+        d["publicoPromocional"] += pub_promocional or 0
+        d["publicoCortesia"] += pub_cortesia or 0
+        d["rendaInteira"] += renda_inteira or 0
+        d["rendaMeia"] += renda_meia or 0
+        d["rendaPromocional"] += renda_promocional or 0
+        d["rendaCortesia"] += renda_cortesia or 0
 
     return {"porAno": sorted(por_ano.values(), key=lambda d: d["ano"])}
 
@@ -1044,6 +1214,9 @@ def api_ancine_bilheteria_grafico(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -1061,6 +1234,7 @@ def api_ancine_bilheteria_grafico(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1082,7 +1256,11 @@ def _query_bilheteria_semanal_uncached(con: duckdb.DuckDBPyConnection, where_sql
         # Agrupa por data (não por ano_cine/semana_cine) pelo mesmo motivo do
         # endpoint bilheteria-grafico acima — ver _ano_cine_py/_semana_cine_py.
         rows = execute_with_timeout(con, f"""
-            SELECT b.DATA_EXIBICAO AS data, SUM(b.PUBLICO) AS publico
+            SELECT b.DATA_EXIBICAO AS data, SUM(b.PUBLICO) AS publico,
+                   SUM(b.PUBLICO_INTEIRA) AS publico_inteira, SUM(b.PUBLICO_MEIA) AS publico_meia,
+                   SUM(b.PUBLICO_PROMOCIONAL) AS publico_promocional, SUM(b.PUBLICO_CORTESIA) AS publico_cortesia,
+                   SUM(b.RENDA_INTEIRA) AS renda_inteira, SUM(b.RENDA_MEIA) AS renda_meia,
+                   SUM(b.RENDA_PROMOCIONAL) AS renda_promocional
             FROM bilheteria b
             WHERE {where_sql}
             GROUP BY 1
@@ -1091,14 +1269,26 @@ def _query_bilheteria_semanal_uncached(con: duckdb.DuckDBPyConnection, where_sql
         # data/ancine/ingresso_hive ainda não existe neste ambiente
         return {"porSemana": []}
 
-    agregado: dict[tuple[int, int], int] = {}
-    for data, publico in rows:
+    agregado: dict[tuple[int, int], dict] = {}
+    for (data, publico, pub_inteira, pub_meia, pub_promocional, pub_cortesia,
+         renda_inteira, renda_meia, renda_promocional) in rows:
         chave = (cinema_year(data), cinema_week(data))
-        agregado[chave] = agregado.get(chave, 0) + (publico or 0)
+        d = agregado.setdefault(chave, {
+            "publico": 0, "publicoInteira": 0, "publicoMeia": 0, "publicoPromocional": 0, "publicoCortesia": 0,
+            "rendaInteira": 0, "rendaMeia": 0, "rendaPromocional": 0,
+        })
+        d["publico"] += publico or 0
+        d["publicoInteira"] += pub_inteira or 0
+        d["publicoMeia"] += pub_meia or 0
+        d["publicoPromocional"] += pub_promocional or 0
+        d["publicoCortesia"] += pub_cortesia or 0
+        d["rendaInteira"] += renda_inteira or 0
+        d["rendaMeia"] += renda_meia or 0
+        d["rendaPromocional"] += renda_promocional or 0
 
     return {"porSemana": [
-        {"ano": ano, "semana": semana, "publico": publico}
-        for (ano, semana), publico in sorted(agregado.items())
+        dict(ano=ano, semana=semana, **valores)
+        for (ano, semana), valores in sorted(agregado.items())
     ]}
 
 
@@ -1121,6 +1311,9 @@ def api_ancine_bilheteria_semanal(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -1138,6 +1331,7 @@ def api_ancine_bilheteria_semanal(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1156,7 +1350,7 @@ def api_ancine_bilheteria_semanal(
 
 _PESSOA_QUERY_SQL = """
     WITH sess AS MATERIALIZED (
-        SELECT b.CPB_ROE, b.DATA_EXIBICAO, b.PUBLICO
+        SELECT b.CPB_ROE, b.DATA_EXIBICAO, b.PUBLICO, b.PUBLICO_PAGANTE, b.RENDA_TOTAL
         FROM bilheteria b
         WHERE {where_sql}
     ),
@@ -1168,7 +1362,8 @@ _PESSOA_QUERY_SQL = """
     -- agregando por CPB_ROE primeiro, o join final é pequeno (nº de títulos ×
     -- pessoas por título, não nº de sessões × pessoas por título).
     titulo_agg AS (
-        SELECT CPB_ROE, SUM(PUBLICO) AS publico, COUNT(*) AS sessoes
+        SELECT CPB_ROE, SUM(PUBLICO) AS publico, SUM(PUBLICO_PAGANTE) AS publico_pagante,
+               SUM(RENDA_TOTAL) AS renda, COUNT(*) AS sessoes
         FROM sess
         GROUP BY CPB_ROE
     ),
@@ -1181,9 +1376,11 @@ _PESSOA_QUERY_SQL = """
     ),
     pessoa_agg AS (
         SELECT pt.pessoa,
-               COUNT(*)        AS qtd_titulos,
-               SUM(ta.publico) AS publico_total,
-               SUM(ta.sessoes) AS sessoes
+               COUNT(*)                AS qtd_titulos,
+               SUM(ta.publico)         AS publico_total,
+               SUM(ta.publico_pagante) AS publico_pagante,
+               SUM(ta.renda)           AS renda_total,
+               SUM(ta.sessoes)         AS sessoes
         FROM pessoa_titulo pt
         JOIN titulo_agg ta ON ta.CPB_ROE = pt.CODIGO
         GROUP BY pt.pessoa
@@ -1194,7 +1391,8 @@ _PESSOA_QUERY_SQL = """
         JOIN titulo_datas td ON td.CPB_ROE = pt.CODIGO
         GROUP BY pt.pessoa
     )
-    SELECT pa.pessoa, pa.qtd_titulos, pa.publico_total, pa.sessoes, pd.dias_exibicao
+    SELECT pa.pessoa, pa.qtd_titulos, pa.publico_total, pa.publico_pagante, pa.renda_total,
+           pa.sessoes, pd.dias_exibicao
     FROM pessoa_agg pa
     JOIN pessoa_dias pd ON pd.pessoa = pa.pessoa
     ORDER BY pa.publico_total DESC
@@ -1209,13 +1407,20 @@ def _query_pessoa_agregada_uncached(con: duckdb.DuckDBPyConnection, where_sql: s
     sql = _PESSOA_QUERY_SQL.format(where_sql=where_sql, pessoa_titulo_sql=pessoa_titulo_sql)
     rows = execute_with_timeout(con, sql, params).fetchall()
     out = []
-    for pessoa, qtd, publico, sessoes, dias in rows:
+    for pessoa, qtd, publico, publico_pagante, renda_total, sessoes, dias in rows:
         publico = publico or 0
+        publico_pagante = publico_pagante or 0
+        renda_total = renda_total or 0
         sessoes = sessoes or 0
         out.append({
             "nome": pessoa,
             "qtdTitulos": qtd,
+            "publicoPagante": publico_pagante,
             "publicoTotal": publico,
+            "rendaTotal": renda_total,
+            # PMI (Preço Médio de Ingresso) agregado = renda / público pagante,
+            # ponderado pelo público de cada sessão (mesma lógica da aba Filmes).
+            "pmi": round(renda_total / publico_pagante, 2) if publico_pagante else None,
             "sessoes": sessoes,
             "diasExibicao": dias or 0,
             "publicoMedioTitulo": round(publico / qtd, 1) if qtd else None,
@@ -1247,6 +1452,9 @@ def api_ancine_diretores(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -1264,6 +1472,7 @@ def api_ancine_diretores(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1292,6 +1501,9 @@ def api_ancine_produtores(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -1309,6 +1521,7 @@ def api_ancine_produtores(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1337,6 +1550,9 @@ def api_ancine_requerentes(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -1355,6 +1571,7 @@ def api_ancine_requerentes(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1383,6 +1600,9 @@ def api_ancine_paises(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -1400,6 +1620,7 @@ def api_ancine_paises(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1603,7 +1824,7 @@ def api_ancine_filme_detalhe(codigo: str):
 
 _SALAS_QUERY_SQL = """
     WITH sess AS (
-        SELECT b.REGISTRO_SALA, b.CPB_ROE, b.PUBLICO
+        SELECT b.REGISTRO_SALA, b.CPB_ROE, b.PUBLICO, b.PUBLICO_PAGANTE, b.RENDA_TOTAL
         FROM bilheteria b
         WHERE {where_sql}
     ),
@@ -1612,6 +1833,8 @@ _SALAS_QUERY_SQL = """
             REGISTRO_SALA,
             COUNT(DISTINCT CPB_ROE) AS qtd_titulos,
             SUM(PUBLICO)            AS publico_total,
+            SUM(PUBLICO_PAGANTE)    AS publico_pagante,
+            SUM(RENDA_TOTAL)        AS renda_total,
             COUNT(*)                AS sessoes
         FROM sess
         GROUP BY REGISTRO_SALA
@@ -1626,7 +1849,7 @@ _SALAS_QUERY_SQL = """
         s.NOME_EXIBIDOR,
         s.NOME_COMPLEXO, s.REGISTRO_COMPLEXO,
         s.NOME_SALA,
-        a.qtd_titulos, a.publico_total, a.sessoes
+        a.qtd_titulos, a.publico_total, a.publico_pagante, a.renda_total, a.sessoes
     FROM agg a
     LEFT JOIN sala_dedup s ON s.REGISTRO_SALA = a.REGISTRO_SALA
     ORDER BY a.publico_total DESC
@@ -1641,8 +1864,11 @@ def _query_salas_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params
         return []
 
     out = []
-    for registro_sala, exibidor, complexo, registro_complexo, sala, qtd, publico, sessoes in rows:
+    for (registro_sala, exibidor, complexo, registro_complexo, sala, qtd,
+         publico, publico_pagante, renda_total, sessoes) in rows:
         publico = publico or 0
+        publico_pagante = publico_pagante or 0
+        renda_total = renda_total or 0
         sessoes = sessoes or 0
         out.append({
             "registroSala": registro_sala,
@@ -1651,7 +1877,10 @@ def _query_salas_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params
             "registroComplexo": registro_complexo,
             "sala": sala,
             "qtdTitulos": qtd,
+            "publicoPagante": publico_pagante,
             "publicoTotal": publico,
+            "rendaTotal": renda_total,
+            "pmi": round(renda_total / publico_pagante, 2) if publico_pagante else None,
             "sessoes": sessoes,
             "publicoMedioSessao": round(publico / sessoes, 1) if sessoes else None,
         })
@@ -1668,6 +1897,80 @@ def _query_salas(con, where_sql: str, params: list) -> list[dict]:
 _SALAS_CACHE: list = []
 
 
+def _query_mapa_uf_uncached(con: duckdb.DuckDBPyConnection, where_sql: str, params: list) -> list[dict]:
+    """Agrega bilheteria por UF da sala de exibição (salaexibicao.UF_COMPLEXO,
+    via bilheteria.UF_SALA_COMPLEXO) — mapa do Brasil da aba Mapa."""
+    try:
+        rows = execute_with_timeout(con, f"""
+            SELECT b.UF_SALA_COMPLEXO AS uf,
+                   SUM(b.PUBLICO) AS publico,
+                   SUM(b.PUBLICO_PAGANTE) AS publico_pagante,
+                   SUM(b.RENDA_TOTAL) AS renda_total,
+                   COUNT(*) AS sessoes
+            FROM bilheteria b
+            WHERE {where_sql} AND b.UF_SALA_COMPLEXO IS NOT NULL
+            GROUP BY 1
+        """, params).fetchall()
+    except duckdb.CatalogException:
+        return []
+
+    out = []
+    for uf, publico, publico_pagante, renda_total, sessoes in rows:
+        publico_pagante = publico_pagante or 0
+        renda_total = renda_total or 0
+        out.append({
+            "uf": uf,
+            "publico": publico or 0,
+            "rendaTotal": renda_total,
+            "sessoes": sessoes or 0,
+            "pmi": round(renda_total / publico_pagante, 2) if publico_pagante else None,
+        })
+    return out
+
+
+def _query_mapa_uf(con, where_sql: str, params: list) -> list[dict]:
+    key = ("mapa-uf", where_sql, tuple(params))
+    return ANALYTICS_CACHE.get_or_set(
+        key, lambda: _query_mapa_uf_uncached(con, where_sql, params)
+    )
+
+
+_MAPA_UF_CACHE: list = []
+
+
+def _query_mapa_municipios_uncached(
+    con: duckdb.DuckDBPyConnection, where_sql: str, params: list, uf: str
+) -> list[dict]:
+    """Mesma agregação de _query_mapa_uf_uncached, restrita a uma UF e
+    detalhada por município — drill-down ao clicar num estado no mapa."""
+    try:
+        rows = execute_with_timeout(con, f"""
+            SELECT b.MUNICIPIO_SALA_COMPLEXO AS municipio,
+                   SUM(b.PUBLICO) AS publico,
+                   SUM(b.PUBLICO_PAGANTE) AS publico_pagante,
+                   SUM(b.RENDA_TOTAL) AS renda_total,
+                   COUNT(*) AS sessoes
+            FROM bilheteria b
+            WHERE {where_sql} AND b.UF_SALA_COMPLEXO = ? AND b.MUNICIPIO_SALA_COMPLEXO IS NOT NULL
+            GROUP BY 1
+        """, [*params, uf]).fetchall()
+    except duckdb.CatalogException:
+        return []
+
+    out = []
+    for municipio, publico, publico_pagante, renda_total, sessoes in rows:
+        publico_pagante = publico_pagante or 0
+        renda_total = renda_total or 0
+        out.append({
+            "municipio": municipio,
+            "publico": publico or 0,
+            "rendaTotal": renda_total,
+            "sessoes": sessoes or 0,
+            "pmi": round(renda_total / publico_pagante, 2) if publico_pagante else None,
+        })
+    return out
+
+
 def _load_ancine_sem_filtro_caches() -> None:
     """Pré-computa, uma vez no boot, a visão 'sem filtro' (estado inicial da
     sidebar) de cada aba que consulta `bilheteria` — os endpoints servem
@@ -1676,7 +1979,7 @@ def _load_ancine_sem_filtro_caches() -> None:
     em cada endpoint), evitando reprocessar a bilheteria inteira (~37M linhas)
     a cada carga da página."""
     global _BILHETERIA_RESUMO_CACHE, _BILHETERIA_GRAFICO_CACHE, _BILHETERIA_SEMANAL_CACHE
-    global _DIRETORES_CACHE, _PRODUTORES_CACHE, _REQUERENTES_CACHE, _PAISES_CACHE, _SALAS_CACHE
+    global _DIRETORES_CACHE, _PRODUTORES_CACHE, _REQUERENTES_CACHE, _PAISES_CACHE, _SALAS_CACHE, _MAPA_UF_CACHE
     con = connect_ancine()
     try:
         where_sql, params = _ancine_filmes_where(_FILMES_FILTER_DEFAULTS)
@@ -1692,6 +1995,7 @@ def _load_ancine_sem_filtro_caches() -> None:
         _PAISES_CACHE = _query_pessoa_agregada(con, where_sql, params,
             "SELECT DISTINCT PAIS_ORIGEM AS pessoa, CODIGO FROM obra_pais WHERE PAIS_ORIGEM IS NOT NULL AND PAIS_ORIGEM != ''")
         _SALAS_CACHE = _query_salas(con, where_sql, params)
+        _MAPA_UF_CACHE = _query_mapa_uf(con, where_sql, params)
     except duckdb.CatalogException:
         # data/ancine/ ainda não está completo neste ambiente — caches ficam
         # nos valores default (vazios) definidos acima dos endpoints
@@ -1709,6 +2013,9 @@ def api_ancine_salas(
     tituloBrasileiro: str = "",
     tituloOriginal: str = "",
     paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
     registroSala: str = "",
     grupoExibidor: list[str] = Query(default=[]),
     municipioSala: list[str] = Query(default=[]),
@@ -1727,6 +2034,7 @@ def api_ancine_salas(
     filters = dict(
         anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
         tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
         registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
         nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
         cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
@@ -1739,6 +2047,94 @@ def api_ancine_salas(
     con = connect_ancine()
     try:
         return _query_salas(con, where_sql, params)
+    finally:
+        con.close()
+
+
+@app.get("/api/ancine/mapa-uf")
+def api_ancine_mapa_uf(
+    anos: list[int] = Query(default=[]),
+    semanaInicio: int | None = None,
+    semanaFim: int | None = None,
+    cpbRoe: str = "",
+    tituloBrasileiro: str = "",
+    tituloOriginal: str = "",
+    paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
+    registroSala: str = "",
+    grupoExibidor: list[str] = Query(default=[]),
+    municipioSala: list[str] = Query(default=[]),
+    ufSala: list[str] = Query(default=[]),
+    nomeDiretor: str = "",
+    nomeProdutor: str = "",
+    cnpjRequerente: str = "",
+    nomeRequerente: str = "",
+    municipioRequerente: list[str] = Query(default=[]),
+    ufRequerente: list[str] = Query(default=[]),
+):
+    """Aba Mapa: público/renda/sessões/PMI por UF da sala de exibição — uma
+    linha por UF. Sem filtro, vem do cache pré-computado no boot."""
+    filters = dict(
+        anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
+        tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
+        registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
+        nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
+        cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
+        municipioRequerente=municipioRequerente, ufRequerente=ufRequerente,
+    )
+    if filters == _FILMES_FILTER_DEFAULTS:
+        return _MAPA_UF_CACHE
+
+    where_sql, params = _ancine_filmes_where(filters)
+    con = connect_ancine()
+    try:
+        return _query_mapa_uf(con, where_sql, params)
+    finally:
+        con.close()
+
+
+@app.get("/api/ancine/mapa-municipios")
+def api_ancine_mapa_municipios(
+    uf: str,
+    anos: list[int] = Query(default=[]),
+    semanaInicio: int | None = None,
+    semanaFim: int | None = None,
+    cpbRoe: str = "",
+    tituloBrasileiro: str = "",
+    tituloOriginal: str = "",
+    paisOrigem: list[str] = Query(default=[]),
+    nacionalidade: list[str] = Query(default=[]),
+    tipoObra: list[str] = Query(default=[]),
+    subtipoObra: list[str] = Query(default=[]),
+    registroSala: str = "",
+    grupoExibidor: list[str] = Query(default=[]),
+    municipioSala: list[str] = Query(default=[]),
+    ufSala: list[str] = Query(default=[]),
+    nomeDiretor: str = "",
+    nomeProdutor: str = "",
+    cnpjRequerente: str = "",
+    nomeRequerente: str = "",
+    municipioRequerente: list[str] = Query(default=[]),
+    ufRequerente: list[str] = Query(default=[]),
+):
+    """Drill-down da aba Mapa: público/renda/sessões/PMI por município,
+    dentro de uma UF — carregado sob demanda ao clicar num estado."""
+    filters = dict(
+        anos=anos, semanaInicio=semanaInicio, semanaFim=semanaFim, cpbRoe=cpbRoe,
+        tituloBrasileiro=tituloBrasileiro, tituloOriginal=tituloOriginal, paisOrigem=paisOrigem,
+        nacionalidade=nacionalidade, tipoObra=tipoObra, subtipoObra=subtipoObra,
+        registroSala=registroSala, grupoExibidor=grupoExibidor, municipioSala=municipioSala, ufSala=ufSala,
+        nomeDiretor=nomeDiretor, nomeProdutor=nomeProdutor,
+        cnpjRequerente=cnpjRequerente, nomeRequerente=nomeRequerente,
+        municipioRequerente=municipioRequerente, ufRequerente=ufRequerente,
+    )
+    where_sql, params = _ancine_filmes_where(filters)
+    con = connect_ancine()
+    try:
+        return _query_mapa_municipios_uncached(con, where_sql, params, uf)
     finally:
         con.close()
 

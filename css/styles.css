@@ -23,6 +23,7 @@
   --map-green:#3dba8a; --map-green-faint:rgba(61,186,138,.1);
   --map-purple:#a78bfa; --map-purple-faint:rgba(167,139,250,.1);
   --map-teal:#22d3ee; --map-teal-faint:rgba(34,211,238,.1);
+  --map-rose:#f472b6; --map-rose-faint:rgba(244,114,182,.1);
   /* CPB/ROE — validado (validate_palette.js) contra --panel dark: lightness band, chroma,
      CVD e contraste OK. Não reaproveitar --accent aqui: --accent fica fora da banda de
      lightness OKLCH para marca de gráfico no modo escuro. */
@@ -61,6 +62,7 @@ html[data-theme="light"]{
   --map-green:#1f9e6a; --map-green-faint:rgba(31,158,106,.1);
   --map-purple:#7c3aed; --map-purple-faint:rgba(124,58,237,.1);
   --map-teal:#0891b2; --map-teal-faint:rgba(8,145,178,.1);
+  --map-rose:#db2777; --map-rose-faint:rgba(219,39,119,.1);
   --cpb-color:#eb6834; --roe-color:#2a78d6;
   /* Mesma paleta categórica, passo claro — validada contra --panel light
      (#ffffff): lightness/chroma/CVD/normal-vision OK; aqua/amarelo/magenta
@@ -204,17 +206,35 @@ select{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line
 
 /* Stat cards */
 .stat-cards{display:grid;grid-template-columns:repeat(7,1fr);gap:12px;flex:0 0 auto;}
-#bh-stat-cards{grid-template-columns:repeat(5,1fr);}
+#bh-stat-cards,#ing-stat-cards{grid-template-columns:repeat(8,1fr);}
 .stat-card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px;}
+#bh-stat-cards .stat-card,#ing-stat-cards .stat-card{padding:10px;}
 .stat-head{display:flex;align-items:flex-start;gap:7px;color:var(--muted);font-size:11px;margin-bottom:10px;min-height:30px;}
+#bh-stat-cards .stat-head,#ing-stat-cards .stat-head{font-size:10px;min-height:26px;}
 .stat-ico{width:22px;height:22px;flex:0 0 22px;border-radius:6px;background:var(--chip);display:flex;align-items:center;justify-content:center;}
 .stat-head span{line-height:1.25;}
 .stat-value{font-size:22px;font-weight:800;letter-spacing:-.5px;}
+#bh-stat-cards .stat-value,#ing-stat-cards .stat-value{font-size:17px;white-space:nowrap;}
 .stat-sub{font-size:11px;color:var(--muted);margin-top:3px;}
+#bh-stat-cards .stat-sub,#ing-stat-cards .stat-sub{font-size:10px;}
+
+/* Detalhamento Brasileira/Estrangeira embaixo de um indicador — barra de
+   proporção + os dois valores, no mesmo espírito dos indicadores do oca. */
+.stat-split-bar{display:flex;height:5px;border-radius:3px;overflow:hidden;background:var(--chip);margin-top:9px;}
+.stat-split-fill{height:100%;transition:width .25s ease;}
+.stat-split-fill.cpb{background:var(--cpb-color);}
+.stat-split-fill.roe{background:var(--roe-color);}
+.stat-split-legend{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 10px;margin-top:6px;font-size:9.5px;color:var(--muted);}
+.stat-split-legend.grid4{display:grid;grid-template-columns:1fr 1fr;gap:3px 8px;}
+.stat-split-item{display:flex;align-items:center;gap:4px;white-space:nowrap;}
+.stat-split-item i{width:6px;height:6px;border-radius:50%;flex:0 0 6px;display:inline-block;}
+.stat-split-item i.cpb{background:var(--cpb-color);}
+.stat-split-item i.roe{background:var(--roe-color);}
+.stat-split-item b{color:var(--ink);font-weight:700;}
 
 /* Tab panes */
 .tab-pane{flex:1;min-height:0;display:none;flex-direction:column;gap:14px;}
-#pane-bilheteria,#pane-paises{overflow-y:auto;overflow-x:hidden;}
+#pane-bilheteria,#pane-ingresso,#pane-paises{overflow-y:auto;overflow-x:hidden;}
 .tab-pane.active{display:flex;}
 .placeholder-pane{flex:1;display:flex;align-items:center;justify-content:center;text-align:center;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:12px;letter-spacing:.3px;padding:40px;}
 
@@ -275,10 +295,15 @@ select{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line
 /* Charts */
 .charts-scroll{flex:1;min-height:0;overflow-y:auto;display:grid;grid-template-columns:1fr 1fr;gap:14px;align-content:start;}
 .chart-card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;}
-#paises-bars-row{align-items:stretch;}
-#paises-bars-row>.chart-card{flex:1;min-width:0;}
+.chart-box{height:440px;overflow-y:auto;}
+.chart-box>.chart-card{min-height:100%;}
 .chart-title{font-size:13px;font-weight:700;margin-bottom:16px;}
 .hbar-row{display:flex;align-items:center;gap:11px;margin-bottom:11px;}
+.hbar-row.clickable{cursor:pointer;border-radius:6px;}
+.hbar-row.clickable:hover{background:var(--row-hover);}
+.map-back-btn{position:absolute;top:10px;left:10px;z-index:6;background:var(--chip);border:1px solid var(--line2);color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.5px;padding:6px 12px;border-radius:7px;cursor:pointer;}
+.map-back-btn:hover{border-color:var(--accent);color:var(--accent);}
+.map-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11.5px;letter-spacing:.5px;text-align:center;padding:20px;}
 .hbar-label{width:110px;flex:0 0 110px;font-size:11.5px;color:var(--muted);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .hbar-track{flex:1;height:16px;background:var(--chip);border-radius:5px;overflow:hidden;}
 .hbar-fill{height:100%;border-radius:5px;background:var(--accent);}
@@ -292,21 +317,37 @@ select{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line
 .rbars{display:flex;align-items:flex-end;justify-content:space-around;gap:14px;height:160px;padding-top:8px;}
 
 /* Table */
-.table-wrap{flex:1;min-height:0;overflow-y:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;}
+.table-wrap{flex:1;min-height:0;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;}
 .thead{display:grid;grid-template-columns:2fr 1.4fr .6fr 1fr .9fr .6fr .6fr .9fr .8fr .55fr .65fr;position:sticky;top:0;background:var(--panel2);border-bottom:1px solid var(--line2);z-index:2;}
-.th{padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);cursor:pointer;user-select:none;}
+.th{padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);cursor:pointer;user-select:none;white-space:nowrap;}
 .th.right{text-align:right;}
 .th.active{color:var(--accent);}
 .trow{display:grid;grid-template-columns:2fr 1.4fr .6fr 1fr .9fr .6fr .6fr .9fr .8fr .55fr .65fr;border-bottom:1px solid var(--line);font-size:12.5px;align-items:center;}
 .trow:hover{background:var(--row-hover);}
 .trow.clickable{cursor:pointer;}
 .trow.trow-active{background:rgba(239,168,56,.08);box-shadow:inset 3px 0 0 var(--accent);}
-#pane-filmes .thead,
-#pane-filmes .trow{grid-template-columns:1fr 1.6fr 1.6fr 1.1fr .8fr .8fr .9fr .7fr .9fr .8fr .9fr;}
-#pane-diretores .thead, #pane-diretores .trow,
-#pane-produtores .thead, #pane-produtores .trow,
-#pane-requerente .thead, #pane-requerente .trow{grid-template-columns:2.2fr .9fr 1.1fr 1fr 1fr 1.2fr 1.2fr;}
-#pane-salaexibicao .thead, #pane-salaexibicao .trow{grid-template-columns:1.8fr 1.7fr 1.7fr .8fr 1.1fr .9fr 1.2fr;}
+
+/* Tabelas Ancine (Filme/Diretor/Produtor/Requerente/Exibidor) — <table> real
+   em vez de CSS grid: cada coluna se ajusta ao conteúdo mais largo de TODA a
+   tabela (thead+tbody compartilham o mesmo algoritmo de colunas do browser,
+   nunca desalinham), e .table-wrap rola na horizontal quando a soma
+   ultrapassa a largura disponível. Toolbar (Exportar CSV) e paginação ficam
+   FORA de .table-wrap de propósito, para não se moverem com esse scroll. */
+.data-table{border-collapse:collapse;width:100%;font-size:12.5px;}
+.data-table thead th{position:sticky;top:0;background:var(--panel2);border-bottom:1px solid var(--line2);z-index:2;text-align:left;padding:12px 16px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:var(--muted);white-space:nowrap;cursor:pointer;user-select:none;}
+.data-table thead th.right{text-align:right;}
+.data-table thead th.active{color:var(--accent);}
+.data-table tbody td{padding:11px 16px;border-bottom:1px solid var(--line);white-space:nowrap;}
+.data-table tbody td.b{font-weight:600;}
+.data-table tbody td.muted{color:var(--muted);}
+.data-table tbody td.mono{font-family:'JetBrains Mono',monospace;color:var(--muted);}
+.data-table tbody td.right{text-align:right;}
+.data-table tbody tr:hover{background:var(--row-hover);}
+.data-table tbody tr.clickable{cursor:pointer;}
+.data-table tbody tr.trow-active{background:rgba(239,168,56,.08);box-shadow:inset 3px 0 0 var(--accent);}
+.data-table tbody td.empty-row{white-space:normal;}
+.toolbar-row{display:flex;justify-content:flex-end;flex:0 0 auto;}
+
 .person-thead{display:grid;grid-template-columns:2fr .65fr 1.1fr .9fr .6fr .6fr .9fr .9fr .75fr .75fr .6fr .6fr;position:sticky;top:0;background:var(--panel2);border-bottom:1px solid var(--line2);z-index:2;}
 .person-trow{display:grid;grid-template-columns:2fr .65fr 1.1fr .9fr .6fr .6fr .9fr .9fr .75fr .75fr .6fr .6fr;border-bottom:1px solid var(--line);font-size:12.5px;align-items:center;}
 .person-trow:hover{background:var(--row-hover);}
@@ -322,7 +363,7 @@ select{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line
 .theme-trow{display:grid;grid-template-columns:2fr .5fr 1.2fr 1.2fr .6fr;border-bottom:1px solid var(--line);font-size:12.5px;align-items:center;}
 .theme-trow:hover{background:var(--row-hover);}
 .idiom-badge{display:inline-block;font-size:10px;font-family:'JetBrains Mono',monospace;padding:1px 6px;border-radius:3px;font-weight:700;letter-spacing:.5px;}
-#pane-theme .table-wrap{flex:0 0 auto;min-height:360px;}.cell{padding:11px 16px;}
+#pane-theme .table-wrap{flex:0 0 auto;min-height:360px;}.cell{padding:11px 16px;white-space:nowrap;}
 .cell.b{font-weight:600;}
 .cell.muted{color:var(--muted);}
 .cell.mono{font-family:'JetBrains Mono',monospace;color:var(--muted);}
@@ -508,5 +549,5 @@ select{width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line
   /* Tabelas — mantêm as colunas legíveis e ganham scroll horizontal em
      vez de espremer tudo numa largura ilegível */
   .table-wrap{overflow-x:auto;}
-  .thead,.trow,.person-thead,.person-trow,.loc-thead,.loc-trow,.theme-thead,.theme-trow{min-width:640px;}
+  .thead,.trow,.person-thead,.person-trow,.loc-thead,.loc-trow,.theme-thead,.theme-trow,.data-table{min-width:640px;}
 }

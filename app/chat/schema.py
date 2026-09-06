@@ -16,12 +16,23 @@ COUNT, nunca traga a tabela crua inteira):
   TITULO_ORIGINAL VARCHAR
   TITULO_BRASIL VARCHAR
   CPB_ROE VARCHAR                -- código da obra (chave para a view `obra`); começa com 'B' (CPB, obra nacional) ou 'E' (ROE, obra estrangeira) — use a macro tipo_registro(CPB_ROE)
+  ANO_CINEMATOGRAFICO INTEGER    -- ano cinematográfico da sessão (ver macro ano_cine — equivalente, mas já materializado nesta coluna)
   AUDIO VARCHAR
   LEGENDADA VARCHAR
   PAIS_OBRA VARCHAR
   REGISTRO_SALA BIGINT           -- chave para salaexibicao.REGISTRO_SALA
   NOME_SALA VARCHAR
   PUBLICO BIGINT                 -- espectadores pagantes+não pagantes daquela sessão (a métrica de "público")
+  PUBLICO_PAGANTE BIGINT         -- espectadores que pagaram (inteira + meia-entrada + promocional); PUBLICO = PUBLICO_PAGANTE + cortesia
+  RENDA_TOTAL DOUBLE             -- renda de bilheteria da sessão, em R$
+  PUBLICO_INTEIRA BIGINT         -- espectadores com ingresso inteiro (preço cheio)
+  PUBLICO_MEIA BIGINT            -- espectadores com meia-entrada
+  PUBLICO_PROMOCIONAL BIGINT     -- espectadores com desconto promocional
+  PUBLICO_CORTESIA BIGINT        -- espectadores com entrada de cortesia (gratuita); PUBLICO = PUBLICO_INTEIRA + PUBLICO_MEIA + PUBLICO_PROMOCIONAL + PUBLICO_CORTESIA
+  RENDA_INTEIRA DOUBLE           -- renda dos ingressos inteiros, em R$
+  RENDA_MEIA DOUBLE              -- renda das meias-entradas, em R$
+  RENDA_PROMOCIONAL DOUBLE       -- renda dos ingressos promocionais, em R$
+  RENDA_CORTESIA DOUBLE          -- renda da cortesia (sempre 0, é gratuita); RENDA_TOTAL = RENDA_INTEIRA + RENDA_MEIA + RENDA_PROMOCIONAL + RENDA_CORTESIA
   REGISTRO_GRUPO_EXIBIDOR BIGINT
   REGISTRO_EXIBIDOR BIGINT
   REGISTRO_COMPLEXO BIGINT       -- chave para salaexibicao.REGISTRO_COMPLEXO
@@ -119,6 +130,13 @@ Exemplos de uso das macros:
 
   SELECT tipo_registro(CPB_ROE) AS tipo, SUM(PUBLICO) AS publico
   FROM bilheteria GROUP BY 1;
+
+PMI (Preço Médio de Ingresso) agregado NÃO é a média simples de uma coluna \
+por sessão — calcule sempre SUM(RENDA_TOTAL) / SUM(PUBLICO_PAGANTE), que \
+pondera pelo público de cada sessão em vez de dar peso igual a sessões \
+vazias e sessões lotadas:
+  SELECT SUM(RENDA_TOTAL) / SUM(PUBLICO_PAGANTE) AS pmi
+  FROM bilheteria WHERE ano_cine(DATA_EXIBICAO) = 2024;
 
 Como unir as views:
   bilheteria.CPB_ROE = obra.CODIGO = obra_pais.CODIGO = obra_diretor.CODIGO = obra_produtor.CODIGO
