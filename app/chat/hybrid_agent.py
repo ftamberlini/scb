@@ -9,7 +9,8 @@ from app.chat.nl2sql_agent import answer_question as answer_sql
 
 logger = logging.getLogger("cinema_dashboard.chat")
 
-SYSTEM_PROMPT = """Você analisa o cinema brasileiro em português usando duas fontes:
+SYSTEM_PROMPT = """Você analisa o cinema brasileiro em português usando duas fontes,
+somente porque o usuário pediu expressamente a comparação entre elas:
 resultados SQL dos arquivos Parquet da Ancine e trechos dos documentos fornecidos.
 Responda à pergunta com uma análise crítica integrada das duas fontes, distinguindo
 os dados observados, o contexto documental e suas inferências. Compare concordâncias,

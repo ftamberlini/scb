@@ -32,8 +32,9 @@ def setup_sources(monkeypatch, *, rows=None, passages=None):
 
 def test_service_combines_both_sources_and_preserves_table(monkeypatch):
     calls, payloads = setup_sources(monkeypatch)
-    result = service.answer_chat_question('E o público?', history=['Em 2024'])
-    assert calls == [('E o público?', None, ['Em 2024'])]
+    question = 'Compare os dados da base de bilheteria com os documentos da legislação'
+    result = service.answer_chat_question(question, history=['Em 2024'])
+    assert calls == [(question, None, ['Em 2024'])]
     assert payloads[0]['perguntas_anteriores'] == ['Em 2024']
     assert payloads[0]['trechos_documentais'][0]['text'] == 'Contexto'
     assert payloads[0]['base_sql']['rows'] == [[123]]

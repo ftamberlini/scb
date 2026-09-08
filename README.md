@@ -6,7 +6,7 @@ Painel web para explorar dados de bilheteria do cinema brasileiro (fonte ANCINE)
 
 - Exibe estatísticas de público, dias de exibição e outros indicadores de bilheteria.
 - Permite navegar os dados por diferentes recortes (filmes, diretores, produtores, salas de exibição, países).
-- Oferece uma pesquisa com IA que combina consultas SQL aos dados Parquet da Ancine e documentos de `knowledge/`, com análise crítica das duas fontes e referências de arquivo e página.
+- Oferece pesquisa com IA orientada primeiro a SQL sobre os dados Parquet da Ancine. Perguntas conceituais consultam `knowledge/`; a análise conjunta das duas fontes ocorre apenas quando pedida expressamente.
 - Suporta modo claro/escuro.
 
 ## Como funciona

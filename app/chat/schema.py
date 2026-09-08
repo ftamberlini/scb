@@ -142,4 +142,15 @@ Como unir as views:
   bilheteria.CPB_ROE = obra.CODIGO = obra_pais.CODIGO = obra_diretor.CODIGO = obra_produtor.CODIGO
   bilheteria.REGISTRO_SALA = salaexibicao.REGISTRO_SALA
   bilheteria.REGISTRO_COMPLEXO = salaexibicao.REGISTRO_COMPLEXO
+
+Regras para filtros de texto (obrigatórias):
+  - Os nomes de colunas acima são o esquema completo disponível para geração de SQL.
+  - Valores textuais podem estar em maiúsculas, minúsculas ou com capitalização mista.
+    Nunca suponha que a grafia digitada pelo usuário coincide com a armazenada.
+  - Para igualdade textual informada em linguagem natural, use comparação sem distinção
+    de maiúsculas/minúsculas, preferencialmente `coluna ILIKE 'valor'` (sem curingas quando
+    a intenção for igualdade) ou `lower(coluna) = lower('valor')`.
+  - Para busca parcial, use `coluna ILIKE '%valor%'`. Isso se aplica especialmente a
+    títulos, países, municípios, salas, complexos, exibidores, diretores e produtores.
+  - Não aplique essas transformações a códigos, CNPJ, UF ou demais identificadores.
 """

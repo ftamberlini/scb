@@ -15,8 +15,8 @@ from app.chat.schema import ANCINE_SCHEMA_PROMPT
 from app.chat.sql_validator import SQLValidationError, validate_and_prepare
 from app.database import connect_ancine
 
-MAX_AGENT_STEPS = 20
-MAX_SQL_ATTEMPTS = 3
+MAX_AGENT_STEPS = int(os.getenv("CHAT_MAX_AGENT_STEPS", "20"))
+MAX_SQL_ATTEMPTS = int(os.getenv("CHAT_MAX_SQL_ATTEMPTS", "3"))
 SQL_TIMEOUT_SECONDS = float(os.getenv("CHAT_SQL_TIMEOUT_SECONDS", "30"))
 TOOL_PREVIEW_ROWS = 20
 
@@ -36,10 +36,15 @@ Regras:
   não tem esse objetivo de qualquer forma.
 - Se a ferramenta devolver um erro (sintaxe, tabela/função não permitida, \
   etc.), leia a mensagem, corrija a consulta e chame a ferramenta de novo. \
-  Tente no máximo 3 vezes; se continuar falhando, explique o problema ao \
+  Tente no máximo {MAX_SQL_ATTEMPTS} vezes; se continuar falhando, explique o problema ao \
   usuário em vez de insistir.
 - Prefira consultas agregadas (GROUP BY, SUM, COUNT) — a tabela `bilheteria` \
   tem dezenas de milhões de linhas.
+- A tradução da pergunta em linguagem natural para SQL é a primeira alternativa. \
+  Use integralmente o esquema fornecido acima e não alegue ausência de uma coluna \
+  que esteja descrita nele.
+- Todo filtro originado de texto livre do usuário deve ignorar diferenças entre \
+  maiúsculas e minúsculas, conforme as regras do esquema. \
 - Depois que a consulta rodar com sucesso, responda em português, de forma \
   direta e objetiva, citando os números concretos que a consulta retornou. \
   Não repita a tabela inteira na resposta em texto — o resultado tabular já \
@@ -76,7 +81,10 @@ def _make_run_sql_tool(con, capture: QueryRun):
         é rejeitada antes de chegar ao banco."""
         capture.attempts += 1
         if capture.attempts > MAX_SQL_ATTEMPTS:
-            return "ERRO: limite de 3 tentativas SQL atingido. Explique o problema ao usuário."
+            return (
+                f"ERRO: limite de {MAX_SQL_ATTEMPTS} tentativas SQL atingido. "
+                "Explique o problema ao usuário."
+            )
 
         try:
             safe_sql = validate_and_prepare(sql)

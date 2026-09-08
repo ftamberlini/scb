@@ -2160,7 +2160,7 @@
 
     if (!state.chat.messages.length) {
       msgs.appendChild(el('div', { class: 'chat-empty' },
-        'Pergunte sobre cinema brasileiro. A IA consulta a base de dados e os documentos disponíveis, compara as evidências e considera suas perguntas anteriores nesta conversa.'));
+        'Pergunte sobre cinema brasileiro. A IA consulta primeiro a base de dados; usa documentos em questões conceituais e cruza as duas fontes somente quando você pedir expressamente.'));
     } else {
       state.chat.messages.forEach(function (m, i) {
         if (m.role === 'user') {
