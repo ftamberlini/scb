@@ -11,7 +11,10 @@
   }
 
   function parseJson(response) {
-    if (!response.ok) throw new Error('HTTP ' + response.status);
+    if (response.status === 401) window.location.replace('/login');
+    if (!response.ok) return response.json().then(function (data) {
+      throw new Error(typeof data.detail === 'string' ? data.detail : 'HTTP ' + response.status);
+    });
     return response.json();
   }
 

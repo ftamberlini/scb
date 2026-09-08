@@ -17,11 +17,12 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 load_dotenv()  # ANTHROPIC_API_KEY / CHAT_LLM_MODEL (chat com IA), lidos de .env em dev
 
+from app.auth.web import ROOT, install_auth
 from app.database import (
     ANCINE_DATA_DIR,
     cinema_week,
@@ -2214,7 +2215,15 @@ def api_ancine_sala_detalhe(registro_sala: int):
         con.close()
 
 
-# ── Chat com IA (NL → SQL) ──────────────────────────────────────────────────
+# Protect pages and APIs; expose only public frontend directories.
+install_auth(app)
 
-# Static files served last so API routes take priority
-app.mount("/", StaticFiles(directory=".", html=True), name="static")
+
+@app.get("/", include_in_schema=False)
+@app.get("/index.html", include_in_schema=False)
+def dashboard_page():
+    return FileResponse(ROOT / "index.html")
+
+
+for directory in ("css", "js", "static"):
+    app.mount(f"/{directory}", StaticFiles(directory=ROOT / directory), name=directory)

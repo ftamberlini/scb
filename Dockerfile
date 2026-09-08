@@ -10,6 +10,8 @@ RUN uv sync --frozen --no-dev
 
 # Copia os arquivos da aplicação
 COPY app/ ./app/
+COPY config/ ./config/
+COPY knowledge/ ./knowledge/
 COPY index.html ./
 COPY js/ ./js/
 COPY css/ ./css/

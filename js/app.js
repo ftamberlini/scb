@@ -2160,7 +2160,7 @@
 
     if (!state.chat.messages.length) {
       msgs.appendChild(el('div', { class: 'chat-empty' },
-        'Faça uma pergunta em português sobre bilheteria, filmes, diretores, produtores ou salas de exibição — a IA converte para SQL, consulta o banco e responde aqui.'));
+        'Pergunte sobre cinema brasileiro. A IA consulta a base de dados e os documentos disponíveis, compara as evidências e considera suas perguntas anteriores nesta conversa.'));
     } else {
       state.chat.messages.forEach(function (m, i) {
         if (m.role === 'user') {
@@ -2184,14 +2184,14 @@
         bubble.appendChild(isError
           ? el('div', {}, 'Erro: ' + m.error)
           : el('div', { html: mdToHtml(m.answer || 'Consulta executada.') }));
-        if (!isError) bubble.appendChild(el('div', { class: 'chat-msg-meta' }, (m.rowCount || 0) + ' linha(s) · ' + chatModelLabel(m.model)));
+        if (!isError) bubble.appendChild(el('div', { class: 'chat-msg-meta' }, chatModelLabel(m.model)));
         if (i !== state.chat.selected) bubble.appendChild(el('div', { class: 'chat-select-hint' }, 'ver resultado →'));
         msgs.appendChild(bubble);
       });
     }
 
     var textarea = el('textarea', {
-      class: 'chat-textarea', id: 'chat-textarea', placeholder: 'Ex.: Qual foi o público total em 2024?',
+      class: 'chat-textarea', id: 'chat-textarea', maxlength: '2000', placeholder: 'Ex.: O que é uma obra audiovisual brasileira?',
       onkeydown: function (ev) {
         if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); sendChatQuestion(); }
       }
@@ -2269,6 +2269,8 @@
   function sendChatQuestion() {
     var question = (state.chat.input || '').trim();
     if (!question || state.chat.loading) return;
+    var history = state.chat.messages.filter(function (m) { return m.role === 'user'; })
+      .slice(-20).map(function (m) { return m.text; });
     state.chat.input = '';
     state.chat.loading = true;
     state.chat.messages.push({ role: 'user', text: question });
@@ -2279,7 +2281,8 @@
 
     window.dashboardApi.postJson('/api/chat/query', {
       question: question,
-      model: state.chat.modelId
+      model: state.chat.modelId,
+      history: history
     })
       .then(function (data) {
         state.chat.messages[idx] = {

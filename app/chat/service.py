@@ -1,14 +1,14 @@
-"""Application service for natural-language data questions.
-Used by the `/api/chat/query` route. It isolates agent and provider errors
-ausente, rate limit, etc.) para que a API sempre devolva um JSON previsível
-em vez de propagar uma exceção 500 crua para o front-end."""
+"""Application service for combined SQL and document-grounded questions.
+
+Isolates provider failures and limits the request duration.
+"""
 import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
+from app.chat.hybrid_agent import answer_question
 from app.chat.models import MODEL_OPTIONS, ModelUnavailableError, resolve_model_id
-from app.chat.nl2sql_agent import answer_question
 
 MAX_QUESTION_LEN = 2000
 CHAT_TIMEOUT_SECONDS = float(os.getenv("CHAT_TIMEOUT_SECONDS", "90"))
@@ -19,7 +19,9 @@ _EXECUTOR = ThreadPoolExecutor(
 logger = logging.getLogger("cinema_dashboard.chat")
 
 
-def answer_chat_question(question: str, model_id: str | None = None) -> dict:
+def answer_chat_question(
+    question: str, model_id: str | None = None, history: list[str] | None = None,
+) -> dict:
     question = (question or "").strip()
     if not question:
         return _error("Digite uma pergunta.")
@@ -30,7 +32,7 @@ def answer_chat_question(question: str, model_id: str | None = None) -> dict:
 
     try:
         started = time.monotonic()
-        result = _EXECUTOR.submit(answer_question, question, model_id).result(
+        result = _EXECUTOR.submit(answer_question, question, model_id, history or []).result(
             timeout=CHAT_TIMEOUT_SECONDS
         )
         logger.info(

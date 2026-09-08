@@ -1,9 +1,46 @@
-oracle
-__pycache__/
-*.pyc
+# Ambientes e artefatos Python
 .venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+build/
+dist/
+*.egg-info/
+
+# Credenciais e configuração específica do ambiente
 .env
-deploy/
+.env.*
+/config/auth.json
+/config/auth.local.json
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Configuração local de ferramentas e arquivos temporários
+/.agents/
+/.codex/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.swp
+*.swo
+*~
+
+# Scripts e configuração local de deploy
+/deploy/
+
+# Dados locais: manter apenas a documentação e os diretórios vazios
+oracle
 data/*
 !data/README.md
 data/csv/

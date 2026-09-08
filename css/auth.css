@@ -1,0 +1,33 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0a0e1a; color: #e9edf5; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; background: radial-gradient(ellipse at top left, #23314b, transparent 65%); }
+main { max-width: 540px; margin: 0 auto; padding: 12vh 24px 48px; }
+main.wide { max-width: 1100px; padding-top: 48px; }
+.brand { color: #efa838; font-size: .8rem; font-weight: 750; letter-spacing: .16em; }
+h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); line-height: 1.15; margin: 20px 0; }
+p { line-height: 1.6; color: #b5bfd1; }
+a { color: #f5bb62; }
+.card { background: #131c2c; border: 1px solid #31405a; border-radius: 16px; padding: 24px; margin: 28px 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.button, button { display: inline-block; font: inherit; cursor: pointer; padding: 12px 18px; border-radius: 9px; background: #efa838; color: #101724; border: 1px solid transparent; font-weight: 650; text-align: center; text-decoration: none; }
+button:disabled { opacity: .55; cursor: wait; }
+.provider { display: block; margin: 14px 0; background: #f3f5fa; color: #172034; }
+.secondary { background: transparent; color: #e9edf5; border-color: #52637e; }
+:focus-visible { outline: 3px solid #8bbafa; outline-offset: 4px; }
+[hidden] { display: none !important; }
+#status { min-height: 24px; }
+.user { margin: 16px 0; }
+.user h2 { font-size: 1.15rem; overflow-wrap: anywhere; }
+.user p { margin: 8px 0; overflow-wrap: anywhere; }
+.permissions { display: flex; flex-wrap: wrap; gap: 16px; margin: 20px 0; }
+label { display: inline-flex; gap: 7px; align-items: center; }
+input { accent-color: #efa838; width: 18px; height: 18px; }
+code { overflow-wrap: anywhere; }
+main.legal { max-width: 760px; padding-top: 8vh; }
+main.legal h2 { font-size: 1.3rem; margin-top: 40px; }
+main.legal h3 { font-size: 1.05rem; margin-top: 24px; color: #e9edf5; }
+main.legal ul { color: #b5bfd1; line-height: 1.6; padding-left: 22px; }
+main.legal li { margin: 6px 0; }
+main.legal .updated { color: #7d8aa3; font-size: .85rem; margin-top: -8px; }
+main.legal nav.toc { display: flex; gap: 16px; margin: 20px 0 0; }
+footer.legal-note { margin: 40px 0 0; font-size: .85rem; color: #7d8aa3; }
